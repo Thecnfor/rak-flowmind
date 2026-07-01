@@ -15,3 +15,6 @@ wheels/
 
 # 用户本地配置（由 agent 初始化对话生成，不入库）
 flowmind.config.toml
+
+# subagent-driven-development 脚手架（本地过程产物，不入库）
+.superpowers/
