@@ -3,7 +3,7 @@ import json
 from pydantic import BaseModel
 from flowmind.contracts import (
     RuleHit, Evidence, ReasoningChain, ReliabilityMetrics,
-    TraceContext, SkillError, SkillOutput, SkillResult, new_trace,
+    SkillError, SkillResult, new_trace,
 )
 
 
