@@ -3,6 +3,8 @@
 纯确定性计算，无外部依赖。阈值来自 config（用户配置 > 通用默认）。
 输出每 SKU 分析 + 汇总，并对被标记 SKU 生成四段式因果推理链。
 """
+from __future__ import annotations
+
 from pydantic import BaseModel, Field, field_validator
 
 from flowmind.config import InventoryConfig, load_config
@@ -138,11 +140,11 @@ def _level(m: dict, cfg: InventoryConfig) -> str:
     return base
 
 
-def _advice(m: dict, level: str) -> str:
-    """按情形给出处置建议。"""
+def _advice(m: dict, level: str, cfg: InventoryConfig) -> str:
+    """按情形给出处置建议。断货阈值取自 cfg.dsi_low。"""
     if m["sales_30d"] == 0 and m["on_hand"] > 0:
         return "立即清仓去化，停止补货"
-    if m["dsi"] is not None and m["dsi"] < 15:
+    if m["dsi"] is not None and m["dsi"] < cfg.dsi_low:
         return "加快补货，防止断货"
     if level in ("预警", "危险"):
         return "促销/调价加速去化"
@@ -155,14 +157,14 @@ def _chain(m: dict, level: str, cfg: InventoryConfig, hits, evidence) -> Reasoni
     """组装四段式因果推理链。"""
     dsi_txt = "无动销" if m["dsi"] is None else f"{m['dsi']:.1f} 天"
     return ReasoningChain(
-        conclusion=f"SKU {m['sku']} 风险等级：{level}；建议：{_advice(m, level)}",
+        conclusion=f"SKU {m['sku']} 风险等级：{level}；建议：{_advice(m, level, cfg)}",
         triggered_rules=hits,
         evidence=evidence,
         causal_analysis=(
             f"周转天数={dsi_txt}、资金占用={m['capital']:.2f}{cfg.currency}，"
             f"命中 {len(hits)} 条规则，综合判定为「{level}」。"
         ),
-        risk_note=_advice(m, level),
+        risk_note=_advice(m, level, cfg),
     )
 
 

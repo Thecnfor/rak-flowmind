@@ -7,6 +7,7 @@ invoke() 统一为技能套上 SkillResult 信封（trace/计时/错误兜底）
 from __future__ import annotations
 
 import inspect
+import typing
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
@@ -38,12 +39,22 @@ _REGISTRY: dict[str, SkillSpec] = {}
 
 
 def skill(*, id: str, name: str, version: str) -> Callable:
-    """把一个业务函数登记为技能。函数签名首参注解即输入模型。"""
+    """把一个业务函数登记为技能。函数签名首参注解即输入模型。
+
+    注解通过 ``typing.get_type_hints`` 解析，因此模块是否启用
+    ``from __future__ import annotations``（PEP 563）都不影响：字符串注解
+    会按函数所在模块的全局命名空间求值回真实类型。
+    """
     def deco(func: Callable[[Any], SkillOutput]) -> Callable[[Any], SkillOutput]:
         params = list(inspect.signature(func).parameters.values())
         if not params:
             raise TypeError(f"技能 {id} 必须有一个输入模型参数")
-        input_model = params[0].annotation
+        first_name = params[0].name
+        try:
+            hints = typing.get_type_hints(func)
+        except Exception as exc:
+            raise TypeError(f"技能 {id} 的首参注解解析失败：{exc}") from exc
+        input_model = hints.get(first_name)
         if not (isinstance(input_model, type) and issubclass(input_model, BaseModel)):
             raise TypeError(f"技能 {id} 的首参注解必须是 pydantic BaseModel 子类")
         _REGISTRY[id] = SkillSpec(id=id, name=name, version=version, func=func, input_model=input_model)
