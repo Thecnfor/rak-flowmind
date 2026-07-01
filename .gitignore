@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 参赛材料（大体积二进制，不入库）
+*.docx
+.~*.docx
+
+# 用户本地配置（由 agent 初始化对话生成，不入库）
+flowmind.config.toml

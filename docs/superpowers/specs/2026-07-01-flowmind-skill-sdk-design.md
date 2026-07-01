@@ -25,7 +25,8 @@
 4. **能力清单**：由注册表生成机器可读的技能清单（含可靠性画像），供龙虾/Agent 发现与挂载。
 5. **MCP Server**：遍历注册表，将每个技能暴露为 MCP tool（pydantic 返回 → 自动 structured output）。
 6. **参考技能**：`inventory_risk`（库销比/库存风险分析），纯确定性、无外部依赖，验证整条链路。
-7. **测试**：契约 / 规则 / 技能 / MCP 四组测试，TDD 驱动。
+7. **配置与 Agent 引导初始化**：技能内置通用默认值开箱即用；配置层支持「用户自己的默认」覆盖；`README.md` 作为 Agent 初始化剧本，引导用户通过对话生成专属配置。
+8. **测试**：契约 / 规则 / 配置 / 技能 / MCP 五组测试，TDD 驱动。
 
 ### 2.2 非目标（本次明确不做）
 
@@ -48,11 +49,12 @@
 ```
 rak-flowmind/
   pyproject.toml          # 依赖: mcp, pydantic  | dev: pytest, pytest-asyncio, ruff
-  README.md
+  README.md               # 双重身份: 人类文档 + Agent 初始化剧本(见 §8)
   src/flowmind/
     __init__.py
     contracts.py          # 契约层: SkillResult / ReasoningChain / ReliabilityMetrics / TraceContext / SkillError
-    rules.py              # 声明式规则引擎 → 自动填 触发规则+数据证据
+    config.py             # 配置层: 各技能配置模型 + 通用默认 + load/save + 初始化状态
+    rules.py              # 声明式规则引擎 → 自动填 触发规则+数据证据 (阈值来自 config)
     skill.py              # Skill 抽象 + @skill 装饰器 + 注册表 (融合点)
     manifest.py           # 由注册表生成能力清单(JSON)
     server.py             # MCP Server: 遍历注册表, 每个 skill 即一个 MCP tool
@@ -62,6 +64,7 @@ rak-flowmind/
   tests/
     test_contracts.py
     test_rules.py
+    test_config.py
     test_inventory_risk.py
     test_server_mcp.py
 ```
@@ -203,7 +206,7 @@ SKU 记录列表，每条：
 
 ### 7.3 规则与风险分级
 
-风险级别：`健康 / 关注 / 预警 / 危险`。规则（阈值可配，默认值示例）：
+风险级别：`健康 / 关注 / 预警 / 危险`。规则（阈值来自 `config.py`，用户配置 > 通用默认，见 §8）：
 - `INV-P01 滞销积压`：`sales_30d==0 且 on_hand>0` → 危险
 - `INV-P02 周转过慢`：`DSI > 危险阈值`
 - `INV-P03 慢周转+资金占用高`：`DSI > 预警阈值 且 资金占用 > 金额阈值`
@@ -218,7 +221,37 @@ SKU 记录列表，每条：
 - `reasoning`：对每个被标记 SKU 生成的四段式链
 - `metrics`：`latency_ms` / `sample_size=len(records)` / `confidence`
 
-## 8. 调用数据流
+## 8. 配置与 Agent 引导初始化（Config & Agent-guided Init）
+
+设计目标：技能开箱即用（内置通用默认），但可被「用户自己的默认」覆盖；用户配置由消费此包的 Agent 通过对话引导生成。这让「打包扔给任何 Agent」形成闭环——装好即可被引导个性化。
+
+### 8.1 配置解析优先级
+
+`flowmind.config.toml`（用户配置）**>** 技能内置通用默认值。阈值**不硬编码在规则内**，规则从 `config.py` 解析。用户配置文件不入库（见 `.gitignore`）。
+
+### 8.2 `config.py`
+
+- 每技能一个 pydantic 配置模型（如 `InventoryConfig`，含各阈值字段并给出通用默认值）。
+- `load_config()`：读取 `flowmind.config.toml`（不存在则全用默认），与默认合并，返回类型化配置。
+- `save_config()` / `write_skill_config()`：供初始化对话把用户设定写回文件。
+- `is_initialized()`：判断用户是否已完成初始化（配置文件是否存在/是否含用户段）。
+
+### 8.3 README.md 作为 Agent 初始化剧本
+
+项目根 `README.md` 含明确面向「消费此包的 Agent」的一节：
+
+- 首次使用时先检查 `is_initialized()`；
+- 若未初始化，引导用户完成对话式初始化：逐项询问业务画像（经营类目、资金规模、期望周转天数、滞销容忍度等），据答案调用 `save_config()` 写出 `flowmind.config.toml`；
+- 列出可用技能及其含义（与 `manifest.py` 输出保持一致）。
+
+README 同时是人类可读文档。
+
+### 8.4 与技能的关系
+
+- 技能 `run()` 内经 `load_config()` 取阈值；未初始化时用通用默认，仍可正常返回结果（如需可用 `degraded` 标注「未个性化配置」）。
+- 新增技能只需定义自己的配置模型 + 默认值，即自动纳入同一套初始化流程，无需改动初始化剧本骨架。
+
+## 9. 调用数据流
 
 ```
 Agent/龙虾 → (MCP tool call) → server.py
@@ -234,7 +267,7 @@ Agent/龙虾 → (MCP tool call) → server.py
 - trace_id：调用方提供则透传，否则生成。
 - 非 MCP 直接调用路径（供测试与非 MCP 场景）：技能函数本身即可直接调用并返回 `SkillResult`。
 
-## 9. 错误处理
+## 10. 错误处理
 
 呼应 CLAUDE.md「自动降级、永不静默」铁律与 silent-failure 防范：
 - 入参非法 → `SkillResult(ok=False, error=SkillError(code="VALIDATION"))`，不吞异常、不返回半成品。
@@ -242,25 +275,27 @@ Agent/龙虾 → (MCP tool call) → server.py
 - 外部/可选依赖缺失 → `ok=True, degraded=True, degradation_reason=...`，返回可用的部分结果。
 - 任何情况都返回结构化 `SkillResult`，龙虾据 `ok`/`error`/`degraded` 决定信任与熔断。
 
-## 10. 测试策略（TDD）
+## 11. 测试策略（TDD）
 
 - `test_contracts.py`：`SkillResult`/`ReasoningChain` 序列化为 JSON、schema 生成正确、泛型载荷可用。
 - `test_rules.py`：给定 `Metrics`，规则命中与 `Evidence` 产出正确。
 - `test_inventory_risk.py`：已知数据集 → 已知分级与汇总；四段式链四要素齐全；边界（0 销量、空输入、负数 → 结构化 VALIDATION 错误）。
+- `test_config.py`：无配置文件时回落通用默认；有 `flowmind.config.toml` 时用户值覆盖默认；`save_config`→`load_config` 往返一致；`is_initialized` 判定正确。
 - `test_server_mcp.py`：MCP 内存客户端 `list_tools` 能发现技能、`call_tool` 返回良构 structured content。
 - 全程红-绿-重构；确定性技能使测试稳定、无外部依赖。
 
-## 11. 依赖与工具链
+## 12. 依赖与工具链
 
 - 运行时：`mcp`、`pydantic`（v2）
 - 开发：`pytest`、`pytest-asyncio`、`ruff`
 - 环境：`uv`（Python 3.11，锁定于 `.python-version`）
 - 代码规范：注释/文档/日志用中文，标识符用英文（遵循 CLAUDE.md）。
 
-## 12. 验收标准
+## 13. 验收标准
 
 1. `uv run pytest` 全绿。
 2. `uv run flowmind-mcp` 可启动 MCP Server（stdio）。
 3. MCP 客户端可发现 `inventory_risk` 工具并调用，返回包含四段式 `reasoning`、`metrics`、`trace` 的 `SkillResult`。
 4. `manifest.py` 可输出含 `inventory_risk` 的能力清单（含可靠性画像）。
-5. 新增一个技能仅需写一个 `@skill` 函数 + 其规则，无需改动 server/契约层。
+5. 无用户配置时技能用通用默认正常运行；写入 `flowmind.config.toml` 后阈值被用户值覆盖；`README.md` 含可被 Agent 执行的初始化剧本。
+6. 新增一个技能仅需写一个 `@skill` 函数 + 其规则 + 其配置模型，无需改动 server/契约层/初始化骨架。
