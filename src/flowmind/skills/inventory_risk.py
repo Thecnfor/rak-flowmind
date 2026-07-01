@@ -93,7 +93,7 @@ def _rules(cfg: InventoryConfig) -> list[Rule]:
             ],
         ),
         Rule(
-            id="INV-P02", name="周转过慢", expression=f"DSI > {cfg.dsi_warn_max}",
+            id="INV-P02", name="周转过慢", expression=f"DSI > {cfg.dsi_warn_max:g}",
             predicate=lambda m: m["dsi"] is not None and m["dsi"] > cfg.dsi_warn_max,
             evidence=lambda m: [
                 Evidence(metric="周转天数(DSI)", value=round(m["dsi"], 1), threshold=cfg.dsi_warn_max, comparison=">", window="近30天"),
@@ -101,7 +101,7 @@ def _rules(cfg: InventoryConfig) -> list[Rule]:
         ),
         Rule(
             id="INV-P03", name="慢周转+资金占用高",
-            expression=f"DSI > {cfg.dsi_watch_max} 且 资金占用 > {cfg.capital_high}",
+            expression=f"DSI > {cfg.dsi_watch_max:g} 且 资金占用 > {cfg.capital_high:g}",
             predicate=lambda m: m["dsi"] is not None and m["dsi"] > cfg.dsi_watch_max and m["capital"] > cfg.capital_high,
             evidence=lambda m: [
                 Evidence(metric="周转天数(DSI)", value=round(m["dsi"], 1), threshold=cfg.dsi_watch_max, comparison=">"),
@@ -109,7 +109,7 @@ def _rules(cfg: InventoryConfig) -> list[Rule]:
             ],
         ),
         Rule(
-            id="INV-P04", name="断货风险", expression=f"DSI < {cfg.dsi_low}",
+            id="INV-P04", name="断货风险", expression=f"DSI < {cfg.dsi_low:g}",
             predicate=lambda m: m["dsi"] is not None and m["dsi"] < cfg.dsi_low,
             evidence=lambda m: [
                 Evidence(metric="周转天数(DSI)", value=round(m["dsi"], 1), threshold=cfg.dsi_low, comparison="<", window="近30天"),

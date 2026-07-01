@@ -11,7 +11,7 @@ from pathlib import Path
 import tomli_w
 from pydantic import BaseModel, Field
 
-DEFAULT_CONFIG_PATH = Path("flowmind.config.toml")
+DEFAULT_CONFIG_PATH = Path("flowmind.config.toml")  # 相对于当前工作目录（cwd）
 
 
 class InventoryConfig(BaseModel):

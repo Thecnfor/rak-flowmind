@@ -96,3 +96,18 @@ def test_skill_rejects_non_basemodel_annotation():
 
     with pytest.raises(TypeError, match="BaseModel 子类"):
         skill(id="_bad", name="错", version="0.1.0")(_bad)
+
+
+def test_skill_rejects_duplicate_id():
+    """同一 id 二次注册必须抛 ValueError，防止静默覆盖。"""
+
+    @skill(id="_dup_id", name="首次", version="0.1.0")
+    def _first(inp: _In) -> SkillOutput[_Out]:
+        return SkillOutput(data=_Out(doubled=inp.n), sample_size=1)
+
+    assert "_dup_id" in registry()
+
+    with pytest.raises(ValueError, match="技能 id 已注册，禁止重复"):
+        @skill(id="_dup_id", name="重复", version="0.1.0")
+        def _second(inp: _In) -> SkillOutput[_Out]:
+            return SkillOutput(data=_Out(doubled=inp.n), sample_size=1)

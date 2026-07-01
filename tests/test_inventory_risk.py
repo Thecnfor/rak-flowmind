@@ -35,6 +35,15 @@ def test_dead_stock_is_danger_with_chain():
     assert len(chain.evidence) >= 1
 
 
+def test_watch_band_high_capital_escalates_to_warning():
+    # DSI = 100/(40/30)=75 天 → 落在 (60,90] = 关注，但 capital=100*1200=120000 > 100000 → 升级 预警
+    result = invoke("inventory_risk", _args([
+        {"sku": "W", "on_hand": 100, "unit_cost": 1200.0, "sales_30d": 40},
+    ]))
+    item = result.data.items[0]
+    assert item.risk_level == "预警"
+
+
 def test_slow_turn_high_capital_escalates():
     # DSI = 1000/(30/30)=1000 天, 资金占用=1000*200=200000 → 危险, 命中 P02/P03
     result = invoke("inventory_risk", _args([

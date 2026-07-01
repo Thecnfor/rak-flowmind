@@ -57,6 +57,8 @@ def skill(*, id: str, name: str, version: str) -> Callable:
         input_model = hints.get(first_name)
         if not (isinstance(input_model, type) and issubclass(input_model, BaseModel)):
             raise TypeError(f"技能 {id} 的首参注解必须是 pydantic BaseModel 子类")
+        if id in _REGISTRY:
+            raise ValueError(f"技能 id 已注册，禁止重复：{id}")
         _REGISTRY[id] = SkillSpec(id=id, name=name, version=version, func=func, input_model=input_model)
         return func
     return deco
