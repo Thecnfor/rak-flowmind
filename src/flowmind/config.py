@@ -26,7 +26,7 @@ class InventoryConfig(BaseModel):
 
 class FeishuKbConfig(BaseModel):
     """飞书知识库 FAQ 检索技能的可配置参数（附通用默认值）。"""
-    data_path: str = ""                # FAQ 数据文件路径；空 = 用默认种子
+    data_path: str = ""                # FAQ 数据 JSON 文件路径；空 = 用默认种子
     retrieval_top_n: int = 20           # 每路召回候选上限（融合前）
     chunk_size: int = 400               # 切块字符数（占位用）
     chunk_overlap: int = 60             # 切块重叠（占位用）

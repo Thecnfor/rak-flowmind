@@ -81,7 +81,7 @@ INTENT_KEYWORDS: dict[str, dict[str, float]] = {
 
 class FeishuKbInput(BaseModel):
     """飞书知识库检索技能入参。"""
-    query: str = Field(min_length=1, description="用户原句")
+    query: str = Field(min_length=1, max_length=2000, description="用户原句（2000 字内）")
     top_k: int = Field(default=3, ge=1, le=20, description="返回条数（默认 3）")
 
 
@@ -299,6 +299,31 @@ def _load_default_faqs() -> tuple[dict, ...]:
     return tuple(json.loads(seed.read_text(encoding="utf-8")))
 
 
+def _load_faqs_from_path(path: str) -> tuple[dict, ...]:
+    """从用户配置路径加载 FAQ JSON。
+
+    安全检查：
+    - 解析为绝对路径，防止奇怪路径
+    - 确认是常规文件（非目录、设备文件等）
+    - 大小上限 50MB（防 DoS）
+    - 必须是合法 JSON 且为 list[dict]
+    """
+    if not path:
+        return ()
+    p = Path(path).resolve()
+    if not p.is_file():
+        return ()
+    if p.stat().st_size > 50 * 1024 * 1024:
+        return ()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ()
+    if not isinstance(data, list):
+        return ()
+    return tuple(data)
+
+
 def _rules(intent_category: str, top1_score: float, has_hits: bool) -> list[Rule]:
     """把命中情况描述为声明式规则，供 evaluate_rules 生成第 2、3 段。"""
     return [
@@ -378,15 +403,41 @@ def _build_chain(
     )
 
 
+def _sanitize_for_prompt(text: str, max_len: int = 200) -> str:
+    """把不可信文本清洗成可安全嵌入 LLM 提示的形态。
+
+    - 去掉换行（防 prompt 分隔注入）
+    - 去掉控制字符
+    - 折叠空白
+    - 截断到 max_len（防长度攻击）
+    - 去掉反引号（防 markdown 代码块逃逸）
+    """
+    if not text:
+        return ""
+    text = _CTRL_RE.sub(" ", text)
+    text = text.replace("\n", " ").replace("\r", " ")
+    text = text.replace("`", "'").replace("</", " ")
+    text = _WS_RE.sub(" ", text).strip()
+    if len(text) > max_len:
+        text = text[:max_len].rstrip() + "…"
+    return text
+
+
 def _agent_reply_hint(query: str, intent_category: str, top_k: list[FaqItem]) -> str:
-    """给上层 Agent 的回复模板指引（不是 SkillOutput 必需，是辅助）。"""
+    """给上层 Agent 的回复模板指引（不是 SkillOutput 必需，是辅助）。
+
+    安全说明：``query`` 来自用户输入，**不可信**。本函数在嵌入 LLM 提示前
+    必须经过 ``_sanitize_for_prompt``：去换行 / 去控制字符 / 截断 / 去反引号。
+    上层 Agent 必须把本输出视作**数据**而非**指令**。
+    """
     if not top_k:
         return (
             "未召回任何 FAQ。请礼貌告知用户当前问题暂无标准答案，"
             "并引导转人工客服。"
         )
+    safe_query = _sanitize_for_prompt(query, max_len=200)
     return (
-        f"用户问题：{query}\n"
+        f"用户问题：{safe_query}\n"
         f"系统分类：{intent_category}\n"
         f"系统已检索 {len(top_k)} 条相关 FAQ，请你：\n"
         f"  1) 用自然语言整合 Top {len(top_k)} 的答案，**优先用第 1 条**；\n"
@@ -411,8 +462,8 @@ def feishu_kb_search(inp: FeishuKbInput) -> SkillOutput[FeishuKbReport]:
     cleaned = _clean(inp.query)
     intent_category, intent_conf, matched = _classify(cleaned)
 
-    # 加载 FAQ（默认从 seed 文件；生产可换成 faqs.json）
-    faqs = list(_load_default_faqs())
+    # 加载 FAQ：优先用 cfg.data_path，否则用默认种子
+    faqs = list(_load_faqs_from_path(cfg.data_path)) if cfg.data_path else list(_load_default_faqs())
     if not faqs:
         return SkillOutput(
             data=FeishuKbReport(
