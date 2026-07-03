@@ -8,6 +8,11 @@ dependencies = [
     "mcp>=1.27,<2",
     "pydantic>=2",
     "tomli-w>=1.0",
+    # feishu_kb skill deps
+    "numpy>=1.26",
+    "jieba>=0.42.1",
+    "rank-bm25>=0.2.2",
+    "scikit-learn>=1.3",
 ]
 
 [project.optional-dependencies]
