@@ -24,9 +24,47 @@ class InventoryConfig(BaseModel):
     currency: str = "USD"
 
 
+class MarketingImageConfig(BaseModel):
+    """营销生图技能的可配置默认值（附通用默认）。"""
+
+    default_platform: str = "xiaohongshu"
+    default_style: str = "literary"
+    default_backend: str = "auto"  # auto 含义见 skills/marketing_image_gen.py
+    default_negative_prompt: str = "no text, no watermark, no blurry, no distorted faces"
+    credit_per_image: int = 1
+    max_variants: int = 4
+    platform_aspect_ratio: dict[str, str] = Field(
+        default_factory=lambda: {
+            "wechat_moment": "1:1",
+            "xiaohongshu": "3:4",
+            "douyin": "9:16",
+            "taobao_main": "1:1",
+            "taobao_detail": "3:4",
+            "banner": "16:9",
+            "weibo": "1:1",
+            "video_cover": "16:9",
+            "generic": "1:1",
+        },
+    )
+    platform_pixel_hint: dict[str, tuple[int, int]] = Field(
+        default_factory=lambda: {
+            "wechat_moment": (1080, 1080),
+            "xiaohongshu": (1080, 1440),
+            "douyin": (1080, 1920),
+            "taobao_main": (1200, 1200),
+            "taobao_detail": (750, 1000),
+            "banner": (1920, 822),
+            "weibo": (1080, 1080),
+            "video_cover": (1920, 1080),
+            "generic": (1024, 1024),
+        },
+    )
+
+
 class FlowmindConfig(BaseModel):
     """FlowMind 总配置：每技能一段。"""
     inventory: InventoryConfig = Field(default_factory=InventoryConfig)
+    marketing_image: MarketingImageConfig = Field(default_factory=MarketingImageConfig)
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> FlowmindConfig:
