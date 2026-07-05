@@ -24,6 +24,14 @@ class InventoryConfig(BaseModel):
     currency: str = "USD"
 
 
+class FeishuKbConfig(BaseModel):
+    """飞书知识库 FAQ 检索技能的可配置参数（附通用默认值）。"""
+    data_path: str = ""                # FAQ 数据 JSON 文件路径；空 = 用默认种子
+    retrieval_top_n: int = 20           # 每路召回候选上限（融合前）
+    chunk_size: int = 400               # 切块字符数（占位用）
+    chunk_overlap: int = 60             # 切块重叠（占位用）
+
+
 class MarketingImageConfig(BaseModel):
     """营销生图技能的可配置默认值（附通用默认）。"""
 
@@ -64,6 +72,7 @@ class MarketingImageConfig(BaseModel):
 class FlowmindConfig(BaseModel):
     """FlowMind 总配置：每技能一段。"""
     inventory: InventoryConfig = Field(default_factory=InventoryConfig)
+    feishu_kb: FeishuKbConfig = Field(default_factory=FeishuKbConfig)
     marketing_image: MarketingImageConfig = Field(default_factory=MarketingImageConfig)
 
 
