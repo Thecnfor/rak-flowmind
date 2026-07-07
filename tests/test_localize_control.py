@@ -87,14 +87,14 @@ def test_cancel_404_returns_internal_video_error(monkeypatch):
         json_data={"detail": "Task not found"},
     )
     r = invoke("localize_cancel", {"task_id": "ghost"})
-    assert r.ok is False
-    assert r.error.code == "INTERNAL"
+    assert r.metrics.degraded is True
     # 404 在 4xx 范围内 → video 类（资源不存在）
-    assert r.error.category == "video"
+    assert r.data.failure_category == "video"
+    assert r.data.cancelled is False
 
 
-def test_cancel_already_finished_returns_environment_error(monkeypatch):
-    """VL 报 'already finished'（400）→ video 类。"""
+def test_cancel_already_finished_returns_degraded_video(monkeypatch):
+    """VL 报 'already finished'（400）→ degraded + video。"""
     _set_base(monkeypatch)
     _install_delete(
         monkeypatch,
@@ -102,8 +102,9 @@ def test_cancel_already_finished_returns_environment_error(monkeypatch):
         json_data={"detail": "Cannot cancel task (not found or already finished)"},
     )
     r = invoke("localize_cancel", {"task_id": "done123"})
-    assert r.ok is False
-    assert r.error.category == "video"
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "video"
+    assert r.data.cancelled is False
 
 
 # ── localize_download ──
@@ -158,11 +159,10 @@ def test_download_not_completed_returns_video_error(monkeypatch):
         "outputs": {},
     })
     r = invoke("localize_download", {"task_id": "running1"})
-    assert r.ok is False
-    assert r.error.code == "INTERNAL"
-    assert r.error.category == "video"
-    # message 应该提示 task 未完成
-    assert "not completed" in r.error.message.lower() or "running" in r.error.message.lower()
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "video"
+    # warning 应该提示 task 未完成
+    assert "not completed" in (r.data.warning or "").lower() or "running" in (r.data.warning or "").lower()
 
 
 def test_download_no_outputs_returns_empty_list(monkeypatch):
@@ -181,13 +181,13 @@ def test_download_no_outputs_returns_empty_list(monkeypatch):
     assert "fake_done" in r.data.warning or "空" in r.data.warning
 
 
-def test_download_404_returns_environment_error(monkeypatch):
-    """task 不存在 → environment。"""
+def test_download_404_returns_degraded(monkeypatch):
+    """task 不存在 → degraded + video。"""
     _set_base(monkeypatch)
     import flowmind.skills.localize_download as ld
     def fake_get(url, timeout=None, **_kw):
         raise requests.HTTPError("404")
     monkeypatch.setattr(ld.requests, "get", fake_get)
     r = invoke("localize_download", {"task_id": "ghost"})
-    assert r.ok is False
-    assert r.error.category in ("video", "environment")
+    assert r.metrics.degraded is True
+    assert r.data.failure_category in ("video", "environment")

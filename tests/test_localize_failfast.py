@@ -58,25 +58,23 @@ def _install_post(monkeypatch, *, status_code=200, json_data=None, side_effect=N
 # ── 测试 ──
 
 def test_health_check_failure_short_circuits_submit(monkeypatch):
-    """VL /health 抛 ConnectionError → 立即 INTERNAL+environment，不调 POST。"""
+    """VL /health 抛 ConnectionError → 立即 degraded+environment，不调 POST。"""
     _install_get_health(monkeypatch, side_effect=requests.exceptions.ConnectionError("refused"))
     post_calls = _install_post(monkeypatch)
     r = invoke("localize_batch", {"video_paths": ["/fake/v.mp4"]})
-    assert r.ok is False
-    assert r.error.code == "INTERNAL"
-    assert r.error.category == "environment"
-    assert r.error.retriable is False
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "environment"
+    assert r.data.retriable is False
     assert post_calls == [], "VL 不通时不该发 submit 请求"
 
 
 def test_health_check_5xx_short_circuits_submit(monkeypatch):
-    """VL /health 返 5xx → 立即 INTERNAL+transient。"""
+    """VL /health 返 5xx → 立即 degraded+transient。"""
     _install_get_health(monkeypatch, status_code=503)
     post_calls = _install_post(monkeypatch)
     r = invoke("localize_batch", {"video_paths": ["/fake/v.mp4"]})
-    assert r.ok is False
-    assert r.error.category in ("transient", "environment"), \
-        "VL 5xx 应归 transient（可重试）或 environment（保守）"
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "transient"
     assert post_calls == []
 
 

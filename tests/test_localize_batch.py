@@ -199,34 +199,33 @@ def test_urls_skip_extension_check(monkeypatch):
 
 # ── HTTP 错误兜底 ──
 
-def test_http_4xx_returns_internal_error(monkeypatch):
-    """VL 返回 4xx → INTERNAL（含 details），不抛裸异常。"""
+def test_http_4xx_returns_degraded_with_video_category(monkeypatch):
+    """VL 返回 4xx → degraded + video category；failfast 不再走 INTERNAL。"""
     _install_post(
         monkeypatch,
         status_code=400,
         json_data={"detail": "Video file not found: /fake/v1.mp4"},
-        raise_for_status_exc=requests.HTTPError("400 Client Error"),
     )
     result = invoke("localize_batch", _args([_path(1)]))
-    assert result.ok is False
-    assert result.error.code == "INTERNAL"
-    assert "400" in result.error.message or "Video file" in result.error.message
+    assert result.metrics.degraded is True
+    assert result.data.failure_category == "video"
+    assert "400" in result.data.api_message or "Video file" in result.data.api_message
 
 
-def test_http_connection_error_returns_internal_error(monkeypatch):
-    """连接失败 → INTERNAL（v0.1 不区分 retriable，留作框架增强）。"""
+def test_http_connection_error_returns_degraded_with_environment(monkeypatch):
+    """连接失败 → degraded + environment category。"""
     _install_post(monkeypatch, side_effect=requests.exceptions.ConnectionError("refused"))
     result = invoke("localize_batch", _args([_path(1)]))
-    assert result.ok is False
-    assert result.error.code == "INTERNAL"
+    assert result.metrics.degraded is True
+    assert result.data.failure_category == "environment"
 
 
-def test_http_timeout_returns_internal_error(monkeypatch):
-    """超时 → INTERNAL（v0.1 不区分 retriable）。"""
+def test_http_timeout_returns_degraded_with_environment(monkeypatch):
+    """超时 → degraded + environment category。"""
     _install_post(monkeypatch, side_effect=requests.exceptions.Timeout("slow"))
     result = invoke("localize_batch", _args([_path(1)]))
-    assert result.ok is False
-    assert result.error.code == "INTERNAL"
+    assert result.metrics.degraded is True
+    assert result.data.failure_category == "environment"
 
 
 # ── 推理链 / 成本档位 / TTS 推荐 ──

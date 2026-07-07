@@ -114,8 +114,8 @@ def test_retry_uses_original_params(monkeypatch):
 
 # ── 原 task 不存在 ──
 
-def test_retry_unknown_task_returns_video_error(monkeypatch):
-    """原 task 404 → INTERNAL+video（资源不存在）。"""
+def test_retry_unknown_task_returns_degraded_video(monkeypatch):
+    """原 task 404 → degraded + video（资源不存在）。"""
     _set_base(monkeypatch)
     _install_get_task(
         monkeypatch,
@@ -123,14 +123,14 @@ def test_retry_unknown_task_returns_video_error(monkeypatch):
         status_code=404,
     )
     r = invoke("localize_retry", {"task_id": "ghost"})
-    assert r.ok is False
-    assert r.error.category == "video"
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "video"
 
 
 # ── 原 task 没 source_video（VL 假完成等）──
 
-def test_retry_without_source_video_returns_video_error(monkeypatch):
-    """原 task 状态是 completed 但 source_video 缺失 → video 类（input 缺失）。"""
+def test_retry_without_source_video_returns_degraded_video(monkeypatch):
+    """原 task 状态是 completed 但 source_video 缺失 → degraded + video（input 缺失）。"""
     _set_base(monkeypatch)
     _install_get_task(monkeypatch, response={
         "task_id": "fake_done",
@@ -139,16 +139,16 @@ def test_retry_without_source_video_returns_video_error(monkeypatch):
         "target_language": "en",
     })
     r = invoke("localize_retry", {"task_id": "fake_done"})
-    assert r.ok is False
-    assert r.error.category == "video"
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "video"
     # 错误信息要明确说"无法重提"
-    assert "source" in r.error.message.lower() or "video" in r.error.message.lower()
+    assert "source" in (r.data.message or "").lower() or "video" in (r.data.message or "").lower()
 
 
 # ── 提交新任务失败：沿用标准分类 ──
 
-def test_retry_submit_failure_returns_transient(monkeypatch):
-    """POST /tasks 5xx → transient。"""
+def test_retry_submit_failure_returns_degraded_transient(monkeypatch):
+    """POST /tasks 5xx → degraded + transient。"""
     _set_base(monkeypatch)
     _install_get_task(monkeypatch, response={
         "task_id": "old1",
@@ -161,16 +161,15 @@ def test_retry_submit_failure_returns_transient(monkeypatch):
         monkeypatch,
         status_code=503,
         response={"detail": "service unavailable"},
-        raise_for_status_exc=requests.HTTPError("503"),
     )
     r = invoke("localize_retry", {"task_id": "old1"})
-    assert r.ok is False
-    assert r.error.code == "INTERNAL"
-    assert r.error.category == "transient"
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "transient"
+    assert r.data.retriable is True
 
 
-def test_retry_connection_error_returns_environment(monkeypatch):
-    """POST /tasks 连接失败 → environment。"""
+def test_retry_connection_error_returns_degraded_environment(monkeypatch):
+    """POST /tasks 连接失败 → degraded + environment。"""
     _set_base(monkeypatch)
     _install_get_task(monkeypatch, response={
         "task_id": "old1",
@@ -181,8 +180,8 @@ def test_retry_connection_error_returns_environment(monkeypatch):
     })
     _install_post_task(monkeypatch, side_effect=requests.exceptions.ConnectionError("refused"))
     r = invoke("localize_retry", {"task_id": "old1"})
-    assert r.ok is False
-    assert r.error.category == "environment"
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "environment"
 
 
 # ── 推理链 ──

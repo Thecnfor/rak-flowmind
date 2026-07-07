@@ -2,6 +2,9 @@
 
 不把二进制塞进 SkillResult（破坏 JSON 信封）；让 Agent 按 URL 自行拉取。
 小文件路径同时返回本地路径，Agent 可用 Read 等工具直接读。
+
+v0.3：错误分类（environment / video / transient）在技能体内完成，
+通过 degraded SkillOutput 返回；failure_category 在 DownloadReport 字段里。
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from flowmind.config import load_config
 from flowmind.contracts import ReasoningChain, SkillOutput
+from flowmind.errors import _classify_exception, is_retriable
 from flowmind.skill import skill
 
 _VERSION = "0.1.0"
@@ -38,6 +42,8 @@ class DownloadReport(BaseModel):
     files: list[DownloadFile]
     degraded: bool = False     # completed 但无产物时为 True（VL 假完成）
     warning: str | None = None
+    failure_category: str | None = None  # 仅 degraded=True 且是网络/服务错误时填充
+    retriable: bool = False
 
 
 # ── 入口 ──
@@ -46,24 +52,30 @@ class DownloadReport(BaseModel):
 def localize_download(inp: DownloadInput) -> SkillOutput[DownloadReport]:
     """调 GET /api/v1/tasks/{task_id} 拉任务详情，列出 outputs 里的文件 + VL 的 download URL。
 
-    任务未完成 → INTERNAL+video（资源状态不对）。
-    任务 completed 但 outputs 空 → degraded=True（VL 假完成信号，让 Agent 警惕）。
+    任务未完成 → degraded + video（资源状态不对）。
+    任务 completed 但 outputs 空 → degraded + warning（VL 假完成信号，让 Agent 警惕）。
+    网络错误 → degraded + environment；5xx → degraded + transient。
     """
     cfg = load_config().localizer
     url = f"{cfg.api_base.rstrip('/')}{cfg.api_prefix}/tasks/{inp.task_id}"
-    resp = requests.get(url, timeout=cfg.http_timeout)
+    try:
+        resp = requests.get(url, timeout=cfg.http_timeout)
+    except requests.exceptions.RequestException as exc:
+        return _failure_output(inp.task_id, exc, _classify_exception(exc))
 
     if resp.status_code == 404:
-        # 任务不存在 → video 类（资源问题）
-        raise requests.HTTPError(f"404 Task {inp.task_id} not found")
+        return _failure_output(inp.task_id, Exception(f"404 Task {inp.task_id} not found"), "video")
+    if resp.status_code >= 500:
+        return _failure_output(inp.task_id, Exception(f"{resp.status_code} HTTPError"), "transient")
     resp.raise_for_status()
     body = resp.json()
 
     status = body.get("status", "unknown")
     if status != "completed":
-        # 用 HTTPError(400) 模拟「资源状态不对」——让 invoke() 归到 video 类
-        raise requests.HTTPError(
-            f"400 Task {inp.task_id} not completed (status={status})"
+        return _failure_output(
+            inp.task_id,
+            Exception(f"Task {inp.task_id} not completed (status={status})"),
+            "video",
         )
 
     outputs = body.get("outputs") or {}
@@ -107,4 +119,31 @@ def localize_download(inp: DownloadInput) -> SkillOutput[DownloadReport]:
         sample_size=len(files),
         degraded=degraded,
         degradation_reason=warning,
+    )
+
+
+def _failure_output(task_id: str, exc: Exception, category: str) -> SkillOutput[DownloadReport]:
+    """统一的失败返回：degraded SkillOutput。"""
+    report = DownloadReport(
+        task_id=task_id,
+        status="unknown",
+        files=[],
+        degraded=True,
+        warning=f"获取任务 {task_id} 失败（{category}）：{exc}",
+        failure_category=category,
+        retriable=is_retriable(category),
+    )
+    chain = ReasoningChain(
+        conclusion=f"下载任务 {task_id} 失败（{category}）",
+        triggered_rules=[],
+        evidence=[],
+        causal_analysis=f"{type(exc).__name__}: {exc}",
+        risk_note=(
+            f"{'可重试' if is_retriable(category) else '需查任务是否存在/是否完成'}；"
+            f"video 类通常说明任务不存在或未 completed。"
+        ),
+    )
+    return SkillOutput(
+        data=report, reasoning=[chain], confidence=0.0, sample_size=0,
+        degraded=True, degradation_reason=category,
     )

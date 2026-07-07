@@ -16,7 +16,8 @@ import json
 import requests
 
 from flowmind.config import LocalizerConfig, get_config
-from flowmind.contracts import ErrorCode, SkillError
+from flowmind.contracts import SkillError
+from flowmind.errors import ErrorCode
 
 
 class VLAPIError(Exception):
@@ -134,11 +135,16 @@ class VLClient:
 
 
 def vlapi_to_skill_error(exc: VLAPIError) -> SkillError:
-    """VLAPIError → SkillError 转换（让 invoke() 统一兜底）。"""
+    """VLAPIError → SkillError 转换（让 invoke() 统一兜底）。
+
+    注意：SkillError 没有 `category` 字段（契约层不变量）。类别信息塞进
+    details["category"]，调用方可在 `error.details["category"]` 读到。
+    """
+    details = dict(exc.details or {})
+    details.setdefault("category", exc.category)
     return SkillError(
         code=exc.code,
         message=exc.message,
-        category=exc.category,
         retriable=exc.category == "transient",
-        details=exc.details,
+        details=details,
     )

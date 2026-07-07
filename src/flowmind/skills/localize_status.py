@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from flowmind.config import LocalizerConfig, load_config
 from flowmind.contracts import Evidence, ReasoningChain, SkillOutput
+from flowmind.errors import _classify_exception
 from flowmind.rules import Rule, evaluate_rules
 from flowmind.skill import skill
 
@@ -62,6 +63,9 @@ class StatusReport(BaseModel):
     queued: int
     stalled: int
     all_terminal: bool
+    failure_category: str | None = None  # 网络/服务错时填充
+    retriable: bool = False
+    warning: str | None = None
 
 
 # ── 规则 ──
@@ -148,10 +152,22 @@ def _fetch_one(cfg: LocalizerConfig, task_id: str) -> TaskStatusReport:
     """单次 GET /api/v1/tasks/{task_id}。
 
     - 404 → 该 task 标 not_found（部分成功，不影响其他 task）
-    - 其它 4xx/5xx / 连接错 / 超时 → 全部抛回 invoke() 兜底为 INTERNAL（fail fast）
+    - 5xx → 该 task 标 unknown + error 文本（partial success）
+    - ConnectionError / Timeout → 该 task 标 unknown + error 文本（partial success）
+    - 其它 4xx → 该 task 标 unknown（不冒泡，让 batch 整体继续）
     """
     url = f"{cfg.api_base.rstrip('/')}{cfg.api_prefix}/tasks/{task_id}"
-    resp = requests.get(url, timeout=cfg.http_timeout)
+    try:
+        resp = requests.get(url, timeout=cfg.http_timeout)
+    except requests.exceptions.RequestException as exc:
+        cat = _classify_exception(exc)
+        return TaskStatusReport(
+            task_id=task_id, status="unknown",
+            source_video=None, target_language=None, output_dir=None,
+            outputs={}, error=f"[{cat}] {exc}",
+            created_at=None, started_at=None, finished_at=None,
+            duration_seconds=None, is_terminal=False, is_stalled=False,
+        )
 
     if resp.status_code == 404:
         return TaskStatusReport(
@@ -161,8 +177,15 @@ def _fetch_one(cfg: LocalizerConfig, task_id: str) -> TaskStatusReport:
             created_at=None, started_at=None, finished_at=None,
             duration_seconds=None, is_terminal=True, is_stalled=False,
         )
+    if resp.status_code >= 400:
+        return TaskStatusReport(
+            task_id=task_id, status="unknown",
+            source_video=None, target_language=None, output_dir=None,
+            outputs={}, error=f"[{resp.status_code}] HTTPError",
+            created_at=None, started_at=None, finished_at=None,
+            duration_seconds=None, is_terminal=False, is_stalled=False,
+        )
 
-    resp.raise_for_status()  # 其它 4xx/5xx → 抛 HTTPError
     body = resp.json()
     return _body_to_report(body)
 

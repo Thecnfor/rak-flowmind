@@ -208,12 +208,17 @@ def test_task_not_found_returns_internal_error(monkeypatch):
     assert t.is_terminal is True
 
 
-def test_connection_error_returns_internal_error(monkeypatch):
-    """整个 batch 通信失败 → INTERNAL。"""
+def test_connection_error_returns_per_task_unknown(monkeypatch):
+    """per-task 通信失败 → 该 task 标 status='unknown' + error 文本，batch 整体仍 ok=True。
+
+    v0.3 设计：partial success 而不是全 batch 失败——这样 Agent 看到 N 个里只 1 个卡住，
+    知道任务还在跑，可以继续轮询。
+    """
     _install_get(monkeypatch, per_task_response=requests.exceptions.ConnectionError("refused"))
     result = invoke("localize_status", _args(["j6"]))
-    assert result.ok is False
-    assert result.error.code == "INTERNAL"
+    assert result.ok is True
+    assert result.data.tasks[0].status == "unknown"
+    assert "environment" in (result.data.tasks[0].error or "")
 
 
 # ── 推理链四要素 ──

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from flowmind.config import LocalizerConfig, load_config
 from flowmind.contracts import Evidence, ReasoningChain, SkillOutput
+from flowmind.errors import _classify_exception, is_retriable
 from flowmind.rules import Rule, evaluate_rules
 from flowmind.skill import skill
 
@@ -23,18 +24,17 @@ _VERSION = "0.1.0"
 
 
 class _ChunkFailedError(Exception):
-    """分批提交过程中某批失败时抛出，携带已成功的 batch_ids。
+    """分批提交过程中某批失败时抛出，携带已成功的 batch_ids 与原始异常。
 
-    invoke() 会自动把 .details 合并到 SkillError.details。
-    分类沿 __cause__ 链判断（ConnectionError → environment / HTTPError → video/transient），
-    这里**不**强制覆盖 category——保留原异常的分类语义。
-    原始异常信息会拼到 message 里（'raise from exc' 之后 str(exc) 也带上）。
+    不再依赖 invoke() 透传 details（contracts.py / skill.py 不变量）——技能体内
+    catch 后分类并以 degraded SkillOutput 返回，把 successful_batch_ids / category
+    等放到 LocalizerReport 的字段里。
     """
-    def __init__(self, message: str, *, successful_batch_ids: list[str], cause: Exception | None = None):
-        if cause is not None:
-            message = f"{message}：{cause}"
-        super().__init__(message)
-        self.details = {"successful_batch_ids": successful_batch_ids}
+    def __init__(self, message: str, *, successful_batch_ids: list[str], failed_chunk_index: int, cause: Exception):
+        super().__init__(f"{message}：{cause}")
+        self.successful_batch_ids = successful_batch_ids
+        self.failed_chunk_index = failed_chunk_index
+        self.cause = cause
 
 
 # ── 入参 ──
@@ -149,6 +149,12 @@ class LocalizerReport(BaseModel):
     api_message: str              # video-localizer 合并后的提示语
     remove_subtitles: bool        # 实际传给 VL 的去字幕开关
     remove_subtitles_strategy: str # 实际传给 VL 的字幕消除策略
+    # ── v0.3 失败模式（degraded=True 时填充；正常成功时为默认值） ──
+    failure_category: str | None = None    # "environment" / "video" / "transient" / "unknown"
+    retriable: bool = False
+    successful_batch_ids: list[str] = []  # 中途失败的 partial success 信息
+    failed_chunk_index: int | None = None
+    warning: str | None = None            # 人类可读的失败原因
 
 
 # ── 预检：扩展名拒绝 ──
@@ -225,6 +231,102 @@ def _band(n: int, low_max: int, high_min: int) -> str:
     return "中"
 
 
+def _health_failure_report(
+    inp: "LocalizerInput", cfg: LocalizerConfig, health_url: str,
+    exc: Exception, category: str,
+) -> SkillOutput[LocalizerReport]:
+    """健康检查失败的统一返回——构造 degraded LocalizerReport + SkillOutput。"""
+    report = LocalizerReport(
+        batch_id="", batch_ids=[], batch_count=0, job_ids=[],
+        total=len(inp.video_paths), submitted_count=0, rejected_count=0,
+        rejected_paths=[], cost_band="低", time_band="低",
+        tts_recommended=False, batch_size_warning=False,
+        api_message=f"video-localizer 健康检查失败：{exc}",
+        remove_subtitles=False, remove_subtitles_strategy="ocr_erase_redraw",
+        failure_category=category,
+        retriable=is_retriable(category),
+        warning=f"VL 不通（{category}），未提交任何任务",
+    )
+    chain = ReasoningChain(
+        conclusion=f"健康检查失败，未提交（{category}）",
+        triggered_rules=[],
+        evidence=[],
+        causal_analysis=f"GET {health_url} → {type(exc).__name__}: {exc}",
+        risk_note="先查 video-localizer 服务是否运行；environment 类错误别重试。",
+    )
+    return SkillOutput(
+        data=report, reasoning=[chain], confidence=0.0,
+        sample_size=len(inp.video_paths),
+        degraded=True, degradation_reason=category,
+    )
+
+
+def _chunk_failure_output(
+    inp: "LocalizerInput",
+    cfg: LocalizerConfig,
+    accepted: list[str],
+    rejected: list[str],
+    batch_ids: list[str],
+    all_job_ids: list[str],
+    chunks: list[list[str]],
+    idx: int,
+    hits: list,
+    evidence: list[Evidence],
+    cost_band: str,
+    time_band: str,
+    effective_tts: bool,
+    effective_remove_subtitles: bool,
+    effective_strategy: str,
+    batch_size_warning: bool,
+    exc: Exception,
+    category: str,
+) -> SkillOutput[LocalizerReport]:
+    """分批提交过程中某批失败的统一返回——partial success 信息在 report 里。"""
+    partial_batch_ids = list(batch_ids)
+    partial_job_ids = list(all_job_ids)
+    submitted_before = sum(len(c) for c in chunks[:idx])
+    report = LocalizerReport(
+        batch_id=partial_batch_ids[0] if partial_batch_ids else "",
+        batch_ids=partial_batch_ids,
+        batch_count=len(chunks),
+        job_ids=partial_job_ids,
+        total=len(accepted),
+        submitted_count=submitted_before,
+        rejected_count=len(rejected),
+        rejected_paths=rejected,
+        cost_band=cost_band,
+        time_band=time_band,
+        tts_recommended=effective_tts,
+        batch_size_warning=batch_size_warning,
+        api_message=f"第 {idx + 1}/{len(chunks)} 批失败（{category}）：{exc}",
+        remove_subtitles=effective_remove_subtitles,
+        remove_subtitles_strategy=effective_strategy,
+        failure_category=category,
+        retriable=is_retriable(category),
+        successful_batch_ids=partial_batch_ids,
+        failed_chunk_index=idx,
+        warning=f"已成功 {len(partial_batch_ids)}/{len(chunks)} 批；第 {idx + 1} 批 {category} 失败",
+    )
+    chain = ReasoningChain(
+        conclusion=(
+            f"批量提交部分失败：{len(partial_batch_ids)}/{len(chunks)} 批成功"
+            + (f"，拆 {len(chunks)} 批提交" if len(chunks) > 1 else "")
+            + f"（{category}）"
+        ),
+        triggered_rules=hits,
+        evidence=evidence,
+        causal_analysis=f"POST /batch 第 {idx + 1} 批 → {type(exc).__name__}: {exc}",
+        risk_note=(
+            f"已提交任务可继续轮询；{'可重试' if is_retriable(category) else '需修环境/输入'}后再补齐。"
+        ),
+    )
+    return SkillOutput(
+        data=report, reasoning=[chain], confidence=0.0,
+        sample_size=len(inp.video_paths),
+        degraded=True, degradation_reason=category,
+    )
+
+
 # ── 四段式推理链 ──
 
 def _build_chain(
@@ -279,10 +381,22 @@ def localize_batch(inp: LocalizerInput) -> SkillOutput[LocalizerReport]:
     """
     cfg = load_config().localizer
 
-    # fail-fast：先 GET /health 探活。VL 挂了立刻抛（由 invoke() 归类为 environment / transient），
-    # 不调 POST 浪费一次往返，也不让 Agent 拿到 job_ids 后才发现跑不动。
+    # fail-fast：先 GET /health 探活。VL 挂了立刻返回 degraded SkillOutput（不调 POST）。
+    # 注意：不能 raise（SkillError 不带 category 字段——契约层不变量），
+    # 而是在技能体内 catch + 分类后直接返回 degraded SkillOutput。
+    # status_code 在请求返回后再判断（503/4xx 不会走 raise_for_status，自动拿到 resp），
+    # 这样 fake helper 即使不挂 .response 也能正确分类。
     health_url = f"{cfg.api_base.rstrip('/')}{cfg.api_prefix}/health"
-    health_resp = requests.get(health_url, timeout=cfg.health_timeout)
+    try:
+        health_resp = requests.get(health_url, timeout=cfg.health_timeout)
+    except requests.exceptions.RequestException as exc:
+        cat = _classify_exception(exc)
+        return _health_failure_report(inp, cfg, health_url, exc, cat)
+
+    if health_resp.status_code >= 500:
+        return _health_failure_report(inp, cfg, health_url, Exception(f"{health_resp.status_code} HTTPError"), "transient")
+    if health_resp.status_code >= 400:
+        return _health_failure_report(inp, cfg, health_url, Exception(f"{health_resp.status_code} HTTPError"), "video")
     health_resp.raise_for_status()
 
     # 预检（扩展名分桶）；model_validator 已保证 accepted 非空，此处不再兜底。
@@ -314,8 +428,7 @@ def localize_batch(inp: LocalizerInput) -> SkillOutput[LocalizerReport]:
         inp.enable_tts if inp.enable_tts is not None else cfg.tts_default
     )
 
-    # HTTP 提交：自动分批。超过 max_videos_per_batch 时按上限 chunk 成多次 POST。
-    # 单批失败 → INTERNAL+transient，error.details.successful_batch_ids 告诉 Agent 哪几批已成功。
+    # HTTP 提交：自动分批。中途失败 → degraded SkillOutput（partial success 在 data 里）。
     url = f"{cfg.api_base.rstrip('/')}{cfg.api_prefix}/batch"
     max_per_batch = max(1, cfg.max_videos_per_batch)
     chunks = [accepted[i:i + max_per_batch] for i in range(0, len(accepted), max_per_batch)]
@@ -334,16 +447,26 @@ def localize_batch(inp: LocalizerInput) -> SkillOutput[LocalizerReport]:
         }
         try:
             resp = requests.post(url, json=payload, timeout=cfg.http_timeout)
-            resp.raise_for_status()
-            body = resp.json()
-        except Exception as exc:
-            # 中途失败：保留原异常链（__cause__）让 invoke() 正确分类，
-            # 同时把已成功的 batch_ids 挂到 .details 让 Agent 能继续轮询
-            raise _ChunkFailedError(
-                f"第 {idx + 1}/{len(chunks)} 批失败（已成功 {len(batch_ids)} 批）",
-                successful_batch_ids=list(batch_ids),
-                cause=exc,
-            ) from exc
+        except requests.exceptions.RequestException as exc:
+            return _chunk_failure_output(
+                inp, cfg, accepted, rejected, batch_ids, all_job_ids,
+                chunks, idx, hits, evidence, cost_band, time_band,
+                effective_tts, effective_remove_subtitles, effective_strategy,
+                batch_size_warning, exc, _classify_exception(exc),
+            )
+
+        # 显式按 status_code 分类（不依赖 raise_for_status 抛错时不挂 response 的场景）
+        if resp.status_code >= 400:
+            return _chunk_failure_output(
+                inp, cfg, accepted, rejected, batch_ids, all_job_ids,
+                chunks, idx, hits, evidence, cost_band, time_band,
+                effective_tts, effective_remove_subtitles, effective_strategy,
+                batch_size_warning,
+                Exception(f"{resp.status_code} HTTPError"),
+                "transient" if resp.status_code >= 500 else "video",
+            )
+        resp.raise_for_status()
+        body = resp.json()
 
         batch_ids.append(str(body.get("batch_id", "")))
         all_job_ids.extend(list(body.get("job_ids", [])))

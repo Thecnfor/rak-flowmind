@@ -130,23 +130,22 @@ def test_exact_multiple_of_max_no_remainder_chunk(monkeypatch):
 
 # ── 部分失败：透出已成功的 batch_id ──
 
-def test_one_chunk_failure_returns_error_with_successful_batches(monkeypatch):
-    """3 批中第 2 批失败（ConnectionError）→ INTERNAL+environment，details 透出第 1 批成功。
+def test_one_chunk_failure_returns_degraded_with_successful_batches(monkeypatch):
+    """3 批中第 2 批失败（ConnectionError）→ degraded + environment，partial success 在 data 里。
 
-    category 由原异常决定：ConnectionError → environment（VL 挂了，不是视频问题）。
+    v0.3 设计：分类信息在 data.failure_category / data.successful_batch_ids，
+    不依赖 SkillError（contracts.py 不变量）。
     """
     _set_max(monkeypatch, 100)
     _install_post_chunked(monkeypatch, fail_on_call_index=1)
     paths = [_path(i) for i in range(250)]
     r = invoke("localize_batch", {"video_paths": paths})
-    assert r.ok is False
-    assert r.error.code == "INTERNAL"
-    # ConnectionError → environment（沿 __cause__ 链）
-    assert r.error.category == "environment"
-    # 错误 details 应该告诉 Agent 第 1 批成功了
-    assert r.error.details is not None
-    assert r.error.details.get("successful_batch_ids") == ["b0"], \
-        f"实际: {r.error.details}"
+    assert r.metrics.degraded is True
+    assert r.data.failure_category == "environment"
+    assert r.data.successful_batch_ids == ["b0"], \
+        f"实际 successful_batch_ids: {r.data.successful_batch_ids}"
+    assert r.data.failed_chunk_index == 1
+    assert r.data.retriable is False
 
 
 # ── 推理链反映分批信息 ──

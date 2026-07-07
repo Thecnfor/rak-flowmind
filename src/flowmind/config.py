@@ -69,11 +69,54 @@ class MarketingImageConfig(BaseModel):
     )
 
 
+class LocalizerConfig(BaseModel):
+    """视频本地化（localize_* 5 个技能）的可配置参数（附通用默认值）。
+
+    阈值类（HTTP 超时 / 批量上限 / 成本分界 / TTS 默认 / 字幕策略 / 允许扩展名 / 服务地址）
+    全走 config——不带默认值硬编码进函数体。
+    """
+    # ── 服务地址 / 网络 ──
+    api_base: str = "http://localhost:8000"
+    api_prefix: str = "/api/v1"
+    http_timeout: float = 30.0          # 业务 HTTP 调用超时（秒）
+    health_timeout: float = 2.0         # /health 探活超时（≤3s，见 test_localize_failfast）
+
+    # ── 语言默认值 ──
+    target_lang_default: str = "en"     # Agent 不传时落到的目标语言
+    source_lang_default: str = "zh"     # 同上，源语言
+    supported_target_langs: list[str] = Field(
+        default_factory=lambda: ["en", "th", "ja", "ko", "es", "fr", "de", "ru"],
+    )
+    supported_source_langs: list[str] = Field(default_factory=lambda: ["zh"])
+
+    # ── 字幕 / TTS 默认 ──
+    tts_default: bool = True            # 默认开启配音
+    remove_subtitles_default: bool = True
+    remove_subtitles_strategy_default: str = "ocr_erase_redraw"  # v0.3 唯一支持
+
+    # ── 文件预检 ──
+    allowed_extensions: list[str] = Field(default_factory=lambda: [".mp4"])
+
+    # ── 阈值（告警 / 档位） ──
+    max_videos_per_batch: int = 100     # 超过则自动 chunk
+    cost_low_max: int = 20              # 视频数 ≤ 此值 → 成本档「低」
+    cost_high_min: int = 100            # 视频数 ≥ 此值 → 成本档「高」
+    poll_max_concurrency: int = 8       # 状态查询并发上限
+    stall_threshold_seconds: int = 600  # running 任务超过此秒数标 stalled
+
+    # ── v0.3 可交互初始化字段（init_for_user 设置） ──
+    tts_voice: str | None = None        # None = 让 VL 按目标语言自动选
+    subtitle_font_size: int = 22        # 横屏；竖屏自动 ×0.7
+    subtitle_position: str = "bottom_safe"  # 防遮画面
+    output_filename_suffix: str = "sub"     # 输出文件名后缀
+
+
 class FlowmindConfig(BaseModel):
     """FlowMind 总配置：每技能一段。"""
     inventory: InventoryConfig = Field(default_factory=InventoryConfig)
     feishu_kb: FeishuKbConfig = Field(default_factory=FeishuKbConfig)
     marketing_image: MarketingImageConfig = Field(default_factory=MarketingImageConfig)
+    localizer: LocalizerConfig = Field(default_factory=LocalizerConfig)
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> FlowmindConfig:
@@ -84,9 +127,87 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> FlowmindConfig:
     return FlowmindConfig.model_validate(data)
 
 
+# 单例缓存：避免每次调用都重读磁盘 + 解析 TOML。
+# 调用 init_for_user / save_config 后用 reload_config() 强制失效。
+_cached_config: FlowmindConfig | None = None
+
+
+def get_config() -> FlowmindConfig:
+    """返回缓存的 FlowmindConfig；首次调用从磁盘加载。"""
+    global _cached_config
+    if _cached_config is None:
+        _cached_config = load_config()
+    return _cached_config
+
+
+def reload_config() -> FlowmindConfig:
+    """强制从磁盘重读，清空缓存。"""
+    global _cached_config
+    _cached_config = None
+    return get_config()
+
+
+def _tomlify(obj):
+    """递归把 dict/list 里的 tuple 转 list（TOML 不支持 tuple）。
+
+    MarketingImageConfig.platform_pixel_hint 用 tuple[int, int]；
+    model_dump 后是 Python repr，tomli_w.dumps 写出来 TOML 反序列化会丢类型。
+    """
+    if isinstance(obj, dict):
+        return {k: _tomlify(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_tomlify(v) for v in obj]
+    return obj
+
+
 def save_config(cfg: FlowmindConfig, path: Path = DEFAULT_CONFIG_PATH) -> None:
-    """把配置写回 TOML 文件（供初始化对话调用）。"""
-    path.write_text(tomli_w.dumps(cfg.model_dump()), encoding="utf-8")
+    """把配置写回 TOML 文件（供初始化对话调用）。
+
+    v0.3 修复：
+    - model_dump(exclude_none=True) 剔除 None（TOML 不支持 null）
+    - _tomlify 把 tuple 转 list（TOML 不支持 tuple 类型）
+    """
+    dumped = _tomlify(cfg.model_dump(exclude_none=True))
+    path.write_text(tomli_w.dumps(dumped), encoding="utf-8")
+
+
+def init_for_user(
+    target_lang: str,
+    source_lang: str = "zh",
+    enable_tts: bool = True,
+    remove_subtitles: bool = True,
+    remove_subtitles_strategy: str = "ocr_erase_redraw",
+    tts_voice: str | None = None,
+    subtitle_font_size: int | None = None,
+    subtitle_position: str | None = None,
+    output_filename_suffix: str | None = None,
+) -> FlowmindConfig:
+    """可交互式初始化：一键设全 localizer 偏好，写入 flowmind.config.toml。
+
+    调用后所有后续 `invoke("localize_*", ...)` 自动应用这套偏好，不用每次传。
+    None 参数视为「不覆盖」（保留现有值或 config 默认）。
+    """
+    cfg = get_config()
+    overrides = {
+        "target_lang_default": target_lang,
+        "source_lang": source_lang,
+        "tts_default": enable_tts,
+        "remove_subtitles_default": remove_subtitles,
+        "remove_subtitles_strategy_default": remove_subtitles_strategy,
+        "tts_voice": tts_voice,
+        "subtitle_font_size": subtitle_font_size,
+        "subtitle_position": subtitle_position,
+        "output_filename_suffix": output_filename_suffix,
+    }
+    # 只用非 None 的覆盖项；None 视为「Agent 没问，留 config 默认」
+    non_none = {k: v for k, v in overrides.items() if v is not None}
+    # 注：source_lang 不是 None 默认，但用户可能显式传 None；这里 None 表示用 cfg 默认。
+    if source_lang is not None:
+        non_none["source_lang_default"] = source_lang
+        non_none.pop("source_lang", None)
+    cfg.localizer = cfg.localizer.model_copy(update=non_none)
+    save_config(cfg)
+    return reload_config()
 
 
 def is_initialized(path: Path = DEFAULT_CONFIG_PATH) -> bool:
