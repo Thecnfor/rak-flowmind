@@ -18,3 +18,6 @@ flowmind.config.toml
 
 # subagent-driven-development 脚手架（本地过程产物，不入库）
 .superpowers/
+
+# flowmind-test-skill 的运行产物（本地测试报告，不入库）
+.test-runs/
