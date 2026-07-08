@@ -31,11 +31,63 @@ class SkillSpec:
     id: str
     name: str
     version: str
-    func: Callable[[Any], SkillOutput]
-    input_model: type[BaseModel]
+    description: str = ""           # 从函数 docstring 第一段提取，供 manifest/discover 用
+    func: Callable[[Any], SkillOutput] = None  # type: ignore[assignment]
+    input_model: type[BaseModel] | None = None
+    output_model: type[BaseModel] | None = None  # 从返回注解 SkillOutput[T] 提取的 T
 
 
 _REGISTRY: dict[str, SkillSpec] = {}
+
+
+def _extract_description(func: Callable) -> str:
+    """从函数 docstring 提取第一段非空文字作为 description。
+
+    - 没 docstring → 空串
+    - 多段 → 用第一段（直到第一个空行）
+    - 中文 / 英文都行，按原文返回
+    """
+    doc = inspect.getdoc(func)
+    if not doc:
+        return ""
+    # 取第一段（空行分隔）
+    first_para = doc.split("\n\n", 1)[0].strip()
+    # 单段里的首行
+    first_line = first_para.split("\n", 1)[0].strip()
+    return first_line
+
+
+def _extract_output_model(func: Callable, hints: dict[str, Any]) -> type[BaseModel] | None:
+    """从返回类型注解 `SkillOutput[T]` 提取 T。
+
+    返回 None 当：注解缺失 / 不是 SkillOutput[...] / T 不是 BaseModel 子类。
+
+    注意：Pydantic Generic 的参数化形式 `SkillOutput[X]` 在运行时是一个独立的类，
+    元数据存在 `__pydantic_generic_metadata__['args']` 里，`typing.get_origin/get_args`
+    看不到。所以两种来源都要查。
+    """
+    ret = hints.get("return")
+    if ret is None:
+        return None
+
+    candidates: list[Any] = []
+
+    # 1. 走 typing 标准接口（处理 typing.Generic[SkillOutput, T] 的写法）
+    origin = typing.get_origin(ret)
+    args = typing.get_args(ret)
+    if origin is SkillOutput and args:
+        candidates.append(args[0])
+
+    # 2. 走 pydantic 的内部 metadata（处理 Pydantic Generic 的参数化形式）
+    pyd_meta = getattr(ret, "__pydantic_generic_metadata__", None)
+    if isinstance(pyd_meta, dict):
+        for a in pyd_meta.get("args", ()):
+            candidates.append(a)
+
+    for c in candidates:
+        if isinstance(c, type) and issubclass(c, BaseModel):
+            return c
+    return None
 
 
 def skill(*, id: str, name: str, version: str) -> Callable:
@@ -44,6 +96,9 @@ def skill(*, id: str, name: str, version: str) -> Callable:
     注解通过 ``typing.get_type_hints`` 解析，因此模块是否启用
     ``from __future__ import annotations``（PEP 563）都不影响：字符串注解
     会按函数所在模块的全局命名空间求值回真实类型。
+
+    返回类型若为 ``SkillOutput[T]``，会自动把 T 记为 output_model，供
+    manifest / discover() 暴露给 Agent 做输出字段发现。
     """
     def deco(func: Callable[[Any], SkillOutput]) -> Callable[[Any], SkillOutput]:
         params = list(inspect.signature(func).parameters.values())
@@ -59,7 +114,12 @@ def skill(*, id: str, name: str, version: str) -> Callable:
             raise TypeError(f"技能 {id} 的首参注解必须是 pydantic BaseModel 子类")
         if id in _REGISTRY:
             raise ValueError(f"技能 id 已注册，禁止重复：{id}")
-        _REGISTRY[id] = SkillSpec(id=id, name=name, version=version, func=func, input_model=input_model)
+        output_model = _extract_output_model(func, hints)
+        _REGISTRY[id] = SkillSpec(
+            id=id, name=name, version=version,
+            description=_extract_description(func),
+            func=func, input_model=input_model, output_model=output_model,
+        )
         return func
     return deco
 
