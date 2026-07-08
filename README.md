@@ -13,60 +13,53 @@
 
 ### 协议第 0 步：用一句话自我介绍并告诉用户你要做什么
 
-> "Hi，我是 [agent name]。我刚拿到了 FlowMind Skill SDK —— 这是个对 Agent 友好的 Python 技能框架。在动手部署前，我需要先和你过几个问题，确认你的环境 + 用法偏好，然后我会自动跑通。准备好了吗？"
+> "Hi，我是 [agent name]。我刚拿到了 FlowMind Skill SDK —— 这是给 AI Agent 用的 Python 技能框架。我会帮你部署 + 跑通验证 + 装好 MCP（你既然发给我，就是要用 MCP），再问 1 个项目偏好。准备好了吗？"
 
-### 协议第 1 步：通过对话采集 4 件事
+### 协议第 1 步：通过对话采集 1 件事
 
-每次问一件事，按用户回答接着问下一件。不要一次塞所有问题。
+**只问 1 个**（别再问 Agent 平台 —— 用户发给你就说明选了你；别问要不要 MCP —— Agent 接 SDK 就必须装）。一次问完，不要拆。
 
-| # | 必问 | 选项 / 示例 | 用途 |
-|---|---|---|---|
-| 1 | **你打算用哪个 Agent 平台跑？** | Claude Desktop / Cursor / Cline / OpenClaw / 自建 Python | 决定要不要配 MCP |
-| 2 | **目标部署语言 / 项目类型？** | 视频本地化（v0.3）/ 库存分析 / FAQ 检索 / 营销生图 | 决定要不要 init config |
-| 3 | **要不要现在跑 `flowmind-init` 配视频本地化偏好？**（仅当 #2 选了视频本地化） | y / n（y 推荐） | 写 `flowmind.config.toml` |
-| 4 | **要不要装 MCP 服务器？（Claude Desktop 等 GUI 客户端必装）** | y / n（推荐 y） | 走 `flowmind-mcp-setup` |
+> **"你的项目主要场景是哪个？这决定要不要配视频本地化偏好。"**
 
-**实现方式**：用 `flowmind.interactive.run_interactive_init(ask_fn=...)` 让 SDK 自己逐项提问给用户，你只需要提供 ask_fn（CLI 用内置 input()，你驱动对话时传自己的 callable）。
+| 选项 | 走法 |
+|---|---|
+| **A. 视频本地化（5 个 localize_*）** | 调 `run_interactive_init(ask_fn=...)` 让 SDK 引导用户答 9 个偏好 |
+| **B. 库存 / FAQ / 营销 / 综合** | 直接走 demo 即可，不需要 init config |
+
+### 协议第 2 步：自动跑（不问）
+
+#### A. 视频本地化分支
 
 ```python
-# Agent 驱动对话的标准模式
 from flowmind.interactive import run_interactive_init
+
+# Agent 驱动：ask_fn 由你实现（把每个 prompt 转成对用户的对话问题）
+# 默认实现：用户按 Enter 接受默认
 cfg = run_interactive_init(ask_fn=my_chat_ask_fn)
 # → 9 个问题逐个问（目标语言 / 源语言 / TTS / 字号 / 位置 / 文件后缀）
 # → 用户每题直接按 Enter 用默认也行
-# → 自动写 TOML + reload
+# → 自动写 flowmind.config.toml + reload
 ```
 
-### 协议第 2 步：按答案执行
+#### B. 其他分支
 
-```
-if #1 in (Claude Desktop, Cursor, Cline, OpenClaw):
-    # 走 MCP 接入：触发 flowmind-mcp-setup skill 或读 docs/agent-integration.md
-    # 给用户具体的 MCP 配置 JSON 片段 + 配到客户端的命令
+什么都不用配 —— `inventory_risk` / `feishu_kb_search` / `marketing_image_gen` 全部带通用默认，直接用。
 
-if #2 == "视频本地化" and #3 == "y":
-    # 已经在协议第 1 步通过 interactive 跑过 init_for_user 了
-    # 验证：cat flowmind.config.toml
-
-if #4 == "y":
-    # MCP server 启动：uv run flowmind-mcp（stdio）
-    # 给用户 stdio 配置 JSON（含 command + args）
-```
-
-### 协议第 3 步：部署验证（必做，别跳过）
+### 协议第 3 步：装依赖 + 跑测试 + 跑 demos（不问）
 
 ```bash
 # 1. 装依赖
 uv sync --extra dev
 
-# 2. 跑 8 个技能的冒烟测试（必须全绿）
+# 2. 跑 8 个技能的全部测试（必须全绿）
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -p pytest_asyncio
 
-# 3. 端到端 Agent 视角测试
-# 触发 flowmind-test-skill，或者直接跑：
-for f in examples/*_demo.py; do PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run python "$f"; done
+# 3. 跑全部 demo 看真实输出
+for f in examples/*_demo.py; do
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run python "$f"
+done
 
-# 4. 发现能力（schema 驱动断言，避免猜字段）
+# 4. 发现能力（schema 驱动，避免猜字段）
 uv run python -c "
 from flowmind import discover
 for s in discover():
@@ -74,16 +67,55 @@ for s in discover():
 "
 ```
 
-把每步的输出摘要反馈给用户。**所有 8 个技能都跑通 + 配置文件存在 + 至少 1 个 demo 跑通 = 部署成功**。
+任何一步报错 → 读 CLAUDE.md「关键约定」段排查。
 
-### 协议第 4 步：交付给用户
+### 协议第 4 步：起 MCP server（必装，不问）
+
+用户既然发给你这个 Agent，**就是要走 MCP**。直接装：
+
+```bash
+# 后台启动（stdio 传输）
+nohup uv run flowmind-mcp > /tmp/flowmind-mcp.log 2>&1 &
+```
+
+**自动检测 Agent 平台并写配置**（不要问）：
+
+```python
+# 检测当前 Agent 平台
+import os
+from pathlib import Path
+
+home = Path.home()
+if (home / ".claude").exists():
+    # Claude Code / Claude Desktop
+    config_path = home / ".claude" / "mcp_servers.json"   # 路径按平台调整
+elif (home / ".cursor").exists():
+    config_path = home / ".cursor" / "mcp.json"
+elif (home / ".config" / "cline" / "cline_mcp_settings.json").exists():
+    config_path = home / ".config" / "cline" / "cline_mcp_settings.json"
+else:
+    config_path = None  # 让用户手动粘贴 stdio config
+
+mcp_config = {
+    "mcpServers": {
+        "flowmind": {
+            "command": "uv",
+            "args": ["--directory", str(Path(__file__).parent), "run", "flowmind-mcp"],
+        }
+    }
+}
+```
+
+把这段 JSON 写到对应路径（或显示给用户让他们粘贴）。
+
+### 协议第 5 步：交付摘要
 
 > "部署完成。你现在可以：
-> - **用 MCP**：在你 [Claude Desktop / Cursor / Cline] 里应该看到 8 个工具（`inventory_risk` / `feishu_kb_search` / `marketing_image_gen` / 5 个 `localize_*`）
+> - **MCP 工具**：在我（[agent name]）里能看到 8 个工具 —— `inventory_risk` / `feishu_kb_search` / `marketing_image_gen` / 5 个 `localize_*`
 > - **直接 Python**：`from flowmind import invoke, discover` 就能用
-> - **继续开发**：触发 `flowmind-add-skill` 加新技能；触发 `flowmind-handle-pr` 处理 PR
+> - **继续开发**：让我帮你加新技能（触发 flowmind-add-skill）或处理 PR（flowmind-handle-pr）
 >
-> 任何问题直接问我，我会读 CLAUDE.md / AGENTS.md 找答案。"
+> 任何问题直接问我。"
 
 ---
 
