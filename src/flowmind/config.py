@@ -37,7 +37,7 @@ class MarketingImageConfig(BaseModel):
 
     default_platform: str = "xiaohongshu"
     default_style: str = "literary"
-    default_backend: str = "auto"  # auto 含义见 skills/marketing_image_gen.py
+    default_backend: str = "auto"  # mock | allin_api | auto（auto=有 key 用真实,无 key 用 mock）
     default_negative_prompt: str = "no text, no watermark, no blurry, no distorted faces"
     credit_per_image: int = 1
     max_variants: int = 4
@@ -67,6 +67,20 @@ class MarketingImageConfig(BaseModel):
             "generic": (1024, 1024),
         },
     )
+
+    # --- allin-api 后端 ---
+    allin_api_base: str = "https://allin-api.com"
+    allin_api_image_model: str = "gpt-image-2"
+    # 关键安全:API key 仅从环境变量读取,绝不放进 toml/commit。
+    # 用户在终端对话初始化时由 Agent 询问,然后由运行环境导出。
+    allin_api_key_env: str = "ALLIN_API_KEY"
+    allin_api_timeout_s: float = 60.0
+
+    # --- 画面描述提取器 ---
+    # auto = 有 key 走 chat 提取,无 key 走 passthrough;passthrough = 总是原文;chat = 总是 chat
+    extractor_mode: str = "auto"
+    extractor_model: str = "gpt-4o-mini"
+    extractor_timeout_s: float = 30.0
 
 
 class FlowmindConfig(BaseModel):
