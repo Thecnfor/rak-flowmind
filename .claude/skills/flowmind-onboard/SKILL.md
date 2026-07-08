@@ -67,24 +67,41 @@ for path, names in field_names("inventory_risk").items():
 
 ### Step 3：INIT_USER —— 引导用户配置偏好（首次必做）
 
-如果用户是新用户（没有 `flowmind.config.toml`），必须问偏好然后写：
+如果用户是新用户（没有 `flowmind.config.toml`），Agent 应该**分步问**而不是一次塞 9 个参数。两种走法：
+
+#### 走法 A：Agent 驱动对话（推荐 —— 用户体验最好）
 
 ```python
-from flowmind.config import is_initialized, init_for_user
+from flowmind.interactive import run_interactive_init
 
-if not is_initialized():
-    # 用对话收集用户偏好
-    init_for_user(
-        target_lang="th",                  # 用户说「我要做泰语本地化」
-        enable_tts=True,
-        tts_voice="th-TH-NiwatNeural",
-        subtitle_font_size=28,
-    )
-    # → 写 flowmind.config.toml（gitignored）
-    # → reload_config() 立即生效
+# ask_fn 是「问用户一个问题，返回答案」的 callable
+# Agent 实现：调 LLM 生成对话问题给用户，把用户回答返回
+cfg = run_interactive_init(ask_fn=my_llm_ask_fn)
+# → 9 个问题逐个问（目标语言 / 源语言 / TTS / 字号 / 位置 / 文件后缀）
+# → 每题给默认 + 解释 + 选项
+# → 用户直接按 Enter 用默认也行
+# → 写 flowmind.config.toml + reload_config
 ```
 
-**哪些字段要问、哪些用默认**：见 `flowmind.config.init_for_user` 的 docstring —— `tts_voice / subtitle_font_size / subtitle_position / output_filename_suffix` 是 v0.3 新增的可选字段，其余都有合理默认。
+#### 走法 B：CLI 跑（用户自己设）
+
+```bash
+uv run flowmind-init
+# → 同样的 9 步向导在终端里问
+```
+
+#### 走法 C：一次性传参（脚本/测试用）
+
+```python
+from flowmind.config import init_for_user
+
+cfg = init_for_user(
+    target_lang="th",
+    enable_tts=True,
+    tts_voice="th-TH-NiwatNeural",
+    subtitle_font_size=28,
+)
+```
 
 **注意**：5 个 `localize_*` 技能会读这套偏好；其他 3 个 skill（`inventory_risk` / `feishu_kb_search` / `marketing_image_gen`）不走这套，是独立配置。
 

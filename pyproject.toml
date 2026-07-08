@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 flowmind-mcp = "flowmind.server:main"
+flowmind-init = "flowmind.interactive:main"
 
 [build-system]
 requires = ["hatchling"]

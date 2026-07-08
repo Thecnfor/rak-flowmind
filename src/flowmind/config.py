@@ -181,13 +181,21 @@ def init_for_user(
     subtitle_font_size: int | None = None,
     subtitle_position: str | None = None,
     output_filename_suffix: str | None = None,
+    save_path: Path | None = None,
 ) -> FlowmindConfig:
     """可交互式初始化：一键设全 localizer 偏好，写入 flowmind.config.toml。
 
     调用后所有后续 `invoke("localize_*", ...)` 自动应用这套偏好，不用每次传。
     None 参数视为「不覆盖」（保留现有值或 config 默认）。
+
+    想要对话式分步引导（适合 Agent 引导用户）？用 `flowmind.interactive.run_interactive_init()`。
     """
-    cfg = get_config()
+    target = save_path or DEFAULT_CONFIG_PATH
+    # 读现 config（从 target 路径，便于 save_path 一致性）
+    if target.exists():
+        cfg = FlowmindConfig.model_validate(tomllib.loads(target.read_text(encoding="utf-8")))
+    else:
+        cfg = FlowmindConfig()
     overrides = {
         "target_lang_default": target_lang,
         "source_lang": source_lang,
@@ -199,15 +207,17 @@ def init_for_user(
         "subtitle_position": subtitle_position,
         "output_filename_suffix": output_filename_suffix,
     }
-    # 只用非 None 的覆盖项；None 视为「Agent 没问，留 config 默认」
     non_none = {k: v for k, v in overrides.items() if v is not None}
-    # 注：source_lang 不是 None 默认，但用户可能显式传 None；这里 None 表示用 cfg 默认。
     if source_lang is not None:
         non_none["source_lang_default"] = source_lang
         non_none.pop("source_lang", None)
     cfg.localizer = cfg.localizer.model_copy(update=non_none)
-    save_config(cfg)
-    return reload_config()
+    save_config(cfg, target)
+    # 强制 reload 走相同 path（避免默认路径污染）
+    global _cached_config
+    _cached_config = None
+    _cached_config = FlowmindConfig.model_validate(tomllib.loads(target.read_text(encoding="utf-8")))
+    return _cached_config
 
 
 def is_initialized(path: Path = DEFAULT_CONFIG_PATH) -> bool:
