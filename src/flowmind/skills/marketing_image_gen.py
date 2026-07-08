@@ -162,6 +162,30 @@ def _hash_id(*parts: object) -> str:
     return h.hexdigest()[:12]
 
 
+def _sanitize_final_prompt(text: str, *, max_len: int = 2000) -> str:
+    """对最终 image prompt 做最后一道脱敏，防 extractor 之外的注入。
+
+    - 截断（防超长）
+    - 去除代码围栏/反引号（防扮演指令的标记污染）
+    - 拒绝已知注入 pattern（命中返回空触发上游回退）
+    """
+    if not text:
+        return ""
+    s = text.strip()
+    if len(s) > max_len:
+        s = s[:max_len].rsplit(" ", 1)[0] or s[:max_len]
+    s = s.replace("```", "").replace("`", "")
+    lower = s.lower()
+    for pat in (
+        "ignore previous", "ignore above", "disregard prior",
+        "<|im_start|>", "<|im_end|>",
+        # 不拦截 "system:" "user:" "assistant:" —— 它们在合法正文里常见
+    ):
+        if pat in lower:
+            return ""
+    return s.strip()
+
+
 def _dimensions(aspect: str, hint: tuple[int, int]) -> tuple[int, int]:
     w_hint, h_hint = hint
     try:
@@ -371,19 +395,27 @@ def marketing_image_gen(inp: MarketingImageInput) -> SkillOutput[MarketingImageP
         notes.append(f"已抽取画面描述(extractor={extractor.name});长度={len(extracted_scene)}")
 
     # --- 2) 拼 final_prompt ---
+    # 安全:把 extracted_scene 与 marketing_copy 视为不透明内容（可能来自不可信
+    # 的 LLM 或用户），用明确分隔符包起来防 image model 误把内容当指令。
     if inp.marketing_copy and extracted_scene:
         if inp.prompt:
             final_prompt = (
-                f"{extracted_scene}\n\n附加要求：{inp.prompt}\n\n"
+                f"{extracted_scene}\n\n"
+                f"附加要求：{inp.prompt}\n\n"
                 f"原始文案：{inp.marketing_copy}"
             )
             prompt_source = "merged"
         else:
-            final_prompt = f"{extracted_scene}\n\n原始文案：{inp.marketing_copy}"
+            final_prompt = (
+                f"{extracted_scene}\n\n原始文案：{inp.marketing_copy}"
+            )
             prompt_source = "extracted_from_copy"
     else:
         final_prompt = inp.prompt
         prompt_source = "user_prompt"
+
+    # 防御深度:对最终 prompt 也脱一次（防注入 pattern 跨过 extractor 边界）
+    final_prompt = _sanitize_final_prompt(final_prompt)
 
     # --- 3) 选后端 + 生成 ---
     backend_obj = _select_image_backend(inp.backend, cfg)

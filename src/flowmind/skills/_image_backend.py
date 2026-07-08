@@ -47,19 +47,28 @@ class ImageBackend:
 
 
 class MockBackend(ImageBackend):
-    """确定性占位后端:URL 由 sha256(prompt+seed+i) 派生,纯本地,可复现。"""
+    """确定性占位后端:URL 由 sha256(prompt+seed+i) 派生,纯本地,可复现。
+
+    安全:``save_dir`` 必须满足以下任一情况:
+    - 为空 / None → 不生成 local_path（只返回 URL）
+    - 绝对路径 + 不含 ``..`` 段 + 不指向敏感系统目录
+
+    不满足时抛 ``ValueError``,避免 path-traversal（CWE-22）类风险。
+    """
 
     name = "mock"
 
     def generate(self, *, prompt, negative_prompt, width, height, n, seed, save_dir):
         if seed is None:
             seed = int(_sha12(prompt), 16) & 0x7FFFFFFF
+        # 校验 save_dir: 绝对路径 + 不含 .. 段 + 不指向系统目录
+        safe_save_dir = _sanitize_save_dir(save_dir) if save_dir else None
         images: list[GeneratedImage] = []
         for i in range(n):
             img_seed = seed + i
             img_id = _sha12(prompt, negative_prompt, width, height, img_seed)
             url = f"https://flowmind.local/mock/{img_id}.png?w={width}&h={height}"
-            local = f"{save_dir.rstrip('/')}/{img_id}.png" if save_dir else None
+            local = f"{safe_save_dir}/{img_id}.png" if safe_save_dir else None
             images.append(GeneratedImage(
                 index=i + 1,
                 url=url,
@@ -69,6 +78,43 @@ class MockBackend(ImageBackend):
                 seed=img_seed,
             ))
         return images
+
+
+def _sanitize_save_dir(save_dir: str) -> str:
+    """校验 save_dir 防 path-traversal。
+
+    - 必须是绝对路径
+    - 不含 ``..`` 段（不允许相对路径跳转）
+    - 不指向系统关键目录（/etc、/root、/var、/proc、/sys 等）
+
+    返回规范化后的绝对路径。任何不合规直接 ``ValueError``。
+    """
+    from pathlib import Path
+    p = Path(save_dir).expanduser()
+    # 必须绝对 —— 相对路径无法判断安全边界
+    if not p.is_absolute():
+        raise ValueError(
+            f"save_dir 必须是绝对路径，收到：{save_dir!r}。"
+            f"为防 path-traversal，禁止相对路径。"
+        )
+    # 解析 .. 段和 symlink（strict=False 避免不存在报错）
+    resolved = p.resolve(strict=False)
+    # 检查 .. 段：解析后路径必须在原路径下
+    try:
+        resolved.relative_to(p)
+    except ValueError:
+        raise ValueError(
+            f"save_dir 含 .. 路径跳转：{save_dir!r} → {resolved}。"
+            f"为防 path-traversal，禁止使用 .. 段。"
+        ) from None
+    # 黑名单系统目录
+    forbidden_prefixes = ("/etc", "/root", "/var", "/proc", "/sys", "/boot", "/dev")
+    for prefix in forbidden_prefixes:
+        if str(resolved).startswith(prefix + "/") or str(resolved) == prefix:
+            raise ValueError(
+                f"save_dir 指向系统敏感目录 {resolved}。为安全起见，禁止写入此处。"
+            )
+    return str(resolved)
 
 
 class AllInApiBackend(ImageBackend):
