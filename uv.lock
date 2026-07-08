@@ -806,6 +806,7 @@ name = "rak-flowmind"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "jieba" },
     { name = "mcp" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "python_full_version < '3.12'" },
@@ -826,6 +827,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
     { name = "jieba", specifier = ">=0.42.1" },
     { name = "mcp", specifier = ">=1.27,<2" },
     { name = "numpy", specifier = ">=1.26" },

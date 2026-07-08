@@ -13,7 +13,10 @@ dependencies = [
     "jieba>=0.42.1",
     "rank-bm25>=0.2.2",
     "scikit-learn>=1.3",
+    # PR #4: localize_* HTTP calls
     "requests>=2.34.2",
+    # PR #5: allin-api gpt-image-2 + chat completions
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
