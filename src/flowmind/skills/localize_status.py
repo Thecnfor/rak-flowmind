@@ -164,7 +164,7 @@ def _fetch_one(cfg: LocalizerConfig, task_id: str) -> TaskStatusReport:
         return TaskStatusReport(
             task_id=task_id, status="unknown",
             source_video=None, target_language=None, output_dir=None,
-            outputs={}, error=f"[{cat}] {exc}",
+            outputs={}, error=f"[{cat}] {type(exc).__name__}",  # 不放完整 exc 消息（避免泄漏）
             created_at=None, started_at=None, finished_at=None,
             duration_seconds=None, is_terminal=False, is_stalled=False,
         )

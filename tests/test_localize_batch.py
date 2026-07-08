@@ -200,7 +200,11 @@ def test_urls_skip_extension_check(monkeypatch):
 # ── HTTP 错误兜底 ──
 
 def test_http_4xx_returns_degraded_with_video_category(monkeypatch):
-    """VL 返回 4xx → degraded + video category；failfast 不再走 INTERNAL。"""
+    """VL 返回 4xx → degraded + video category；failfast 不再走 INTERNAL。
+
+    v0.3 安全修复：api_message 不再泄漏异常详情（避免内部 host / 凭证外泄），
+    只保留 generic 描述 + category。
+    """
     _install_post(
         monkeypatch,
         status_code=400,
@@ -209,7 +213,10 @@ def test_http_4xx_returns_degraded_with_video_category(monkeypatch):
     result = invoke("localize_batch", _args([_path(1)]))
     assert result.metrics.degraded is True
     assert result.data.failure_category == "video"
-    assert "400" in result.data.api_message or "Video file" in result.data.api_message
+    # 通用描述：含分类 + 不含 URL / 异常详情
+    assert "video" in result.data.api_message
+    assert "http://" not in result.data.api_message
+    assert "Video file" not in result.data.api_message
 
 
 def test_http_connection_error_returns_degraded_with_environment(monkeypatch):

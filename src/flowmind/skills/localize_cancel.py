@@ -80,20 +80,24 @@ def localize_cancel(inp: CancelInput) -> SkillOutput[CancelReport]:
 
 
 def _failure_output(task_id: str, exc: Exception, category: str) -> SkillOutput[CancelReport]:
-    """统一的失败返回：degraded SkillOutput，category 在 report 字段里。"""
+    """统一的失败返回：degraded SkillOutput，category 在 report 字段里。
+
+    注意：不写完整 exc 消息到 report / reasoning（避免泄漏内部 host / 凭证）。
+    仅保留异常类型名 + category，Agent 足够据此决策。
+    """
     report = CancelReport(
         task_id=task_id,
         cancelled=False,
-        message=str(exc),
+        message=f"VL 调用失败（{category}）",
         failure_category=category,
         retriable=is_retriable(category),
-        warning=f"取消失败（{category}）：{exc}",
+        warning=f"取消失败（{category}）",
     )
     chain = ReasoningChain(
         conclusion=f"取消任务 {task_id} 失败（{category}）",
         triggered_rules=[],
         evidence=[],
-        causal_analysis=f"{type(exc).__name__}: {exc}",
+        causal_analysis=f"取消任务端点 → {type(exc).__name__}",
         risk_note=(
             f"{'可重试' if is_retriable(category) else '需查环境或任务状态'}；"
             f"transient/environment 通常无需 Agent 介入。"

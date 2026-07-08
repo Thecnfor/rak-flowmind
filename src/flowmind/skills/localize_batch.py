@@ -235,13 +235,18 @@ def _health_failure_report(
     inp: "LocalizerInput", cfg: LocalizerConfig, health_url: str,
     exc: Exception, category: str,
 ) -> SkillOutput[LocalizerReport]:
-    """健康检查失败的统一返回——构造 degraded LocalizerReport + SkillOutput。"""
+    """健康检查失败的统一返回——构造 degraded LocalizerReport + SkillOutput。
+
+    注意：故意不把 `health_url` 和 `exc` 的完整消息写进 report / reasoning——这些
+    字段对 Agent 可见，会泄漏内部 host / 凭证。保留 category + 异常类型供 Agent
+    做下一步决策，详细信息只写日志。
+    """
     report = LocalizerReport(
         batch_id="", batch_ids=[], batch_count=0, job_ids=[],
         total=len(inp.video_paths), submitted_count=0, rejected_count=0,
         rejected_paths=[], cost_band="低", time_band="低",
         tts_recommended=False, batch_size_warning=False,
-        api_message=f"video-localizer 健康检查失败：{exc}",
+        api_message="video-localizer 健康检查失败",
         remove_subtitles=False, remove_subtitles_strategy="ocr_erase_redraw",
         failure_category=category,
         retriable=is_retriable(category),
@@ -251,7 +256,7 @@ def _health_failure_report(
         conclusion=f"健康检查失败，未提交（{category}）",
         triggered_rules=[],
         evidence=[],
-        causal_analysis=f"GET {health_url} → {type(exc).__name__}: {exc}",
+        causal_analysis=f"探测 video-localizer 健康端点 → {type(exc).__name__}",
         risk_note="先查 video-localizer 服务是否运行；environment 类错误别重试。",
     )
     return SkillOutput(
@@ -298,7 +303,7 @@ def _chunk_failure_output(
         time_band=time_band,
         tts_recommended=effective_tts,
         batch_size_warning=batch_size_warning,
-        api_message=f"第 {idx + 1}/{len(chunks)} 批失败（{category}）：{exc}",
+        api_message=f"第 {idx + 1}/{len(chunks)} 批失败（{category}）",
         remove_subtitles=effective_remove_subtitles,
         remove_subtitles_strategy=effective_strategy,
         failure_category=category,
@@ -315,7 +320,7 @@ def _chunk_failure_output(
         ),
         triggered_rules=hits,
         evidence=evidence,
-        causal_analysis=f"POST /batch 第 {idx + 1} 批 → {type(exc).__name__}: {exc}",
+        causal_analysis=f"提交视频本地化批任务第 {idx + 1} 批 → {type(exc).__name__}",
         risk_note=(
             f"已提交任务可继续轮询；{'可重试' if is_retriable(category) else '需修环境/输入'}后再补齐。"
         ),

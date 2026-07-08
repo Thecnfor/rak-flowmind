@@ -129,7 +129,11 @@ def localize_retry(inp: RetryInput) -> SkillOutput[RetryReport]:
 
 
 def _fail_output(task_id: str, exc: Exception, category: str) -> SkillOutput[RetryReport]:
-    """统一的失败返回：degraded SkillOutput，category / message 在 report 字段里。"""
+    """统一的失败返回：degraded SkillOutput，category / message 在 report 字段里。
+
+    注意：message 字段不直接放 `str(exc)`（避免泄漏内部 host / 凭证）；仅保留
+    异常类型名 + category，Agent 足够据此决策。
+    """
     report = RetryReport(
         original_task_id=task_id,
         new_task_id="",
@@ -140,13 +144,13 @@ def _fail_output(task_id: str, exc: Exception, category: str) -> SkillOutput[Ret
         remove_subtitles=False,
         failure_category=category,
         retriable=is_retriable(category),
-        message=str(exc),
+        message=f"重提失败（{category}）：{type(exc).__name__}",
     )
     chain = ReasoningChain(
         conclusion=f"重提任务 {task_id} 失败（{category}）",
         triggered_rules=[],
         evidence=[],
-        causal_analysis=f"{type(exc).__name__}: {exc}",
+        causal_analysis=f"重提任务端点 → {type(exc).__name__}",
         risk_note=(
             f"{'可重试' if is_retriable(category) else '需查环境或视频资源'}；"
             f"video 类通常需要更换 source_video。"

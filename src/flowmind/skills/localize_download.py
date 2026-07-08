@@ -123,13 +123,17 @@ def localize_download(inp: DownloadInput) -> SkillOutput[DownloadReport]:
 
 
 def _failure_output(task_id: str, exc: Exception, category: str) -> SkillOutput[DownloadReport]:
-    """统一的失败返回：degraded SkillOutput。"""
+    """统一的失败返回：degraded SkillOutput。
+
+    注意：warning 字段不放完整 `str(exc)`（避免泄漏内部 host / 凭证）。仅保留
+    category + 异常类型名，Agent 足够据此决策。
+    """
     report = DownloadReport(
         task_id=task_id,
         status="unknown",
         files=[],
         degraded=True,
-        warning=f"获取任务 {task_id} 失败（{category}）：{exc}",
+        warning=f"获取任务 {task_id} 失败（{category}）",
         failure_category=category,
         retriable=is_retriable(category),
     )
@@ -137,7 +141,7 @@ def _failure_output(task_id: str, exc: Exception, category: str) -> SkillOutput[
         conclusion=f"下载任务 {task_id} 失败（{category}）",
         triggered_rules=[],
         evidence=[],
-        causal_analysis=f"{type(exc).__name__}: {exc}",
+        causal_analysis=f"查询任务状态端点 → {type(exc).__name__}",
         risk_note=(
             f"{'可重试' if is_retriable(category) else '需查任务是否存在/是否完成'}；"
             f"video 类通常说明任务不存在或未 completed。"
