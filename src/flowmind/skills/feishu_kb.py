@@ -153,6 +153,106 @@ _FULL2HALF = {
 # 话题外防御：标准转人工文案（Agent 上层直接透传给用户）
 _OFFTOPIC_HINT = "暂未收录此类问题，请换个问法或联系人工客服。"
 
+# 三语翻译指令：KB 内容是中文 source of truth，LLM 只做语言转换，不补充信息
+_TRANSLATION_HINT = {
+    "zh": "",  # 中文无需翻译
+    "en": "\n[Language] User asked in English. Translate the Chinese Top-1 answer above into natural English. Do not add any information beyond the FAQ content.",
+    "th": "\n[Language] ผู้ใช้ถามเป็นภาษาไทย กรุณาแปลคำตอบจากภาษาจีนด้านบนเป็นภาษาไทยที่เป็นธรรมชาติ ห้ามเพิ่มข้อมูลนอกเหนือจากเนื้อหา FAQ",
+    "other": "\n[Language] User asked in an unsupported language. Respond briefly: '暂未收录此类问题，请用中文、英文或泰文提问。'",
+}
+
+
+def _detect_language(text: str) -> str:
+    """检测查询语言: zh / en / th / other。
+
+    实现:基于 Unicode 字符范围(零依赖、轻量、确定性)。
+    - 中文字符: CJK Unified Ideographs (U+4E00-U+9FFF)
+    - 泰文字符: Thai block (U+0E00-U+0E7F)
+    - 英文/拉丁: ASCII / Latin-1 Supplement 及以上
+
+    返回值优先级: 含中文字符 → zh;含泰文字符 → th;仅拉丁 → en;其他 → other。
+    """
+    if not text:
+        return "other"
+    has_zh = False
+    has_th = False
+    has_alpha = False
+    for ch in text:
+        cp = ord(ch)
+        if 0x4E00 <= cp <= 0x9FFF:  # CJK
+            has_zh = True
+        elif 0x0E00 <= cp <= 0x0E7F:  # Thai
+            has_th = True
+        elif ch.isalpha():
+            has_alpha = True
+    if has_zh:
+        return "zh"
+    if has_th:
+        return "th"
+    if has_alpha:
+        return "en"
+    return "other"
+
+
+# 跨语言检索桥接: EN/TH 关键词 → 中文同义词。
+# 在非中文 query 上做关键词扩展,把 "charge/battery" 等映射成 "充电/电池",
+# 让 BM25+TF-IDF 在中文 FAQ 上能命中。
+# 规模: ~40 个 EN 词 + ~40 个 TH 词,覆盖 FAQ 语料里的核心领域词。
+# 不做完整翻译,只做"领域词"映射 —— 通用词由 LLM 翻译层处理。
+_CROSS_LANG_SYNONYMS: dict[str, list[str]] = {
+    # English → Chinese
+    "charge": ["充电"], "charging": ["充电"], "charger": ["充电桩"], "plug": ["充电枪"],
+    "battery": ["电池"], "power": ["动力"], "range": ["续航"], "mileage": ["续航里程"],
+    "tire": ["轮胎"], "tyre": ["轮胎"], "pressure": ["胎压"], "flat": ["亏气"],
+    "engine": ["发动机"], "motor": ["电机"], "brake": ["刹车"], "braking": ["刹车"],
+    "fault": ["故障"], "error": ["报错"], "warning": ["报警"], "light": ["灯"],
+    "lamp": ["指示灯"], "indicator": ["指示灯"], "indicator lamp": ["指示灯"],
+    "start": ["启动"], "stall": ["失速"], "stalling": ["失速"],
+    "noise": ["异响"], "noise sound": ["异响"], "vibration": ["抖动"],
+    "jerk": ["顿挫"], "jerking": ["顿挫"], "shudder": ["抖动"],
+    "screen": ["车机"], "display": ["车机"], "airbag": ["安全气囊"],
+    "ABS": ["ABS"], "ESC": ["电子稳定"], "ESP": ["电子稳定"],
+    "AC": ["空调"], "air conditioning": ["空调"], "heater": ["暖风"],
+    "door": ["车门"], "window": ["车窗"], "lock": ["门锁"],
+    "key": ["钥匙"], "remote": ["遥控"], "remote control": ["遥控"],
+    "seat": ["座椅"], "seat massage": ["按摩"],
+    "winter": ["冬季"], "summer": ["夏季"], "cold": ["低温"], "heat": ["暖风"],
+    "CVT": ["CVT"], "transmission": ["变速器"], "gearbox": ["变速器"],
+    "indicator light on": ["指示灯"],
+    # Thai → Chinese
+    "ชาร์จ": ["充电"], "ชาร์จไฟ": ["充电"], "แบตเตอรี่": ["电池"],
+    "ไฟฟ้า": ["充电"], "พลังงาน": ["动力"], "ระยะทาง": ["续航"],
+    "ยาง": ["轮胎"], "ลมยาง": ["胎压"], "แรงดัน": ["胎压"],
+    "เครื่องยนต์": ["发动机"], "มอเตอร์": ["电机"], "เบรก": ["刹车"],
+    "ขัดข้อง": ["故障"], "ผิดปกติ": ["报错"], "เตือน": ["报警"],
+    "ไฟ": ["灯"], "สัญญาณไฟ": ["指示灯"], "ไฟเตือน": ["指示灯"],
+    "สตาร์ท": ["启动"], "ดับ": ["失速"], "เสียงดัง": ["异响"],
+    "สั่น": ["抖动"], "กระตุก": ["顿挫"],
+    "หน้าจอ": ["车机"], "ถุงลม": ["安全气囊"],
+    "แอร์": ["空调"], "เครื่องปรับอากาศ": ["空调"], "ฮีทเตอร์": ["暖风"],
+    "ประตู": ["车门"], "กุญแจ": ["钥匙"], "รีโมท": ["遥控"],
+    "เบาะ": ["座椅"], "ที่นั่ง": ["座椅"],
+    "ฤดูหนาว": ["冬季"], "ฤดูร้อน": ["夏季"], "หนาว": ["低温"],
+}
+
+
+def _expand_query_for_cross_lang(query: str, lang: str) -> str:
+    """对非中文 query 做关键词扩展,把 EN/TH 词翻译成 ZH 词以命中 FAQ。
+
+    仅在 lang != "zh" 时调用;不修改中文 query。
+    """
+    if lang == "zh" or lang == "other":
+        return query
+    query_lower = query.lower()
+    expansions: list[str] = []
+    for term, zh_synonyms in _CROSS_LANG_SYNONYMS.items():
+        if term.lower() in query_lower:
+            expansions.extend(zh_synonyms)
+    if not expansions:
+        return query
+    # 把 ZH 同义词追加到 query(用空格分隔,tokenize 时会一并处理)
+    return f"{query} {' '.join(expansions)}"
+
 
 def _clean(text: str) -> str:
     if not text:
@@ -485,7 +585,10 @@ def feishu_kb_search(inp: FeishuKbInput) -> SkillOutput[FeishuKbReport]:
     """
     cfg = load_config().feishu_kb
     cleaned = _clean(inp.query)
-    intent_category, intent_conf, matched = _classify(cleaned)
+    lang = _detect_language(cleaned)  # 语言检测：三语支持
+    # 三语支持：非中文 query 在检索前做关键词扩展(EN/TH→ZH 同义词),让 BM25 能命中中文 FAQ
+    retrieval_query = _expand_query_for_cross_lang(cleaned, lang)
+    intent_category, intent_conf, matched = _classify(retrieval_query)
 
     # 加载 FAQ：优先用 cfg.data_path，否则用默认种子
     faqs = list(_load_faqs_from_path(cfg.data_path)) if cfg.data_path else list(_load_default_faqs())
@@ -503,14 +606,19 @@ def feishu_kb_search(inp: FeishuKbInput) -> SkillOutput[FeishuKbReport]:
         )
 
     # 检索 + 重排
-    candidates = _hybrid_search(faqs, cleaned, top_n=cfg.retrieval_top_n)
+    candidates = _hybrid_search(faqs, retrieval_query, top_n=cfg.retrieval_top_n)
     top_k = _rerank(candidates, intent_category=intent_category, top_k=inp.top_k)
 
     # ★ Hard-gate：意图分类置信度=0（4 类关键词都没命中）→ 必转人工。
     # 这是"机器人不回复多余话题"的核心防线。原因：FAQ 语料里大量"是啥问题？/怎么样？"
     # 等句式，纯噪音查询也会拿到较高 BM25 分数，单靠分数阈值无法稳定拦截。
     # 意图关键词命中是更可靠的"领域内"信号。
-    off_topic = intent_conf == 0.0
+    # 三语支持: 非中文查询(英文/泰文)用 BM25 直接对中文语料检索也能命中(关键词翻译近似),
+    # 不走"intent_confidence == 0"的拦截,只走分数阈值,让 LLM 层做语言转换。
+    if lang == "zh":
+        off_topic = intent_conf == 0.0
+    else:
+        off_topic = False  # 非中文查询的关键词 gate 不适用
     low_score = bool(top_k) and top_k[0].final_score < cfg.min_top1_score
     if off_topic or low_score:
         reason = []
@@ -518,6 +626,7 @@ def feishu_kb_search(inp: FeishuKbInput) -> SkillOutput[FeishuKbReport]:
             reason.append("意图分类置信度=0（4 类关键词均未命中）")
         if low_score:
             reason.append(f"Top-1 final_score {top_k[0].final_score:.4f} < 阈值 {cfg.min_top1_score}")
+        hint = _OFFTOPIC_HINT + _TRANSLATION_HINT.get(lang, "")
         return SkillOutput(
             data=FeishuKbReport(
                 query=inp.query,
@@ -526,7 +635,7 @@ def feishu_kb_search(inp: FeishuKbInput) -> SkillOutput[FeishuKbReport]:
                 intent_confidence=intent_conf,
                 matched_keywords=matched,
                 top_k=[],
-                agent_reply_hint=_OFFTOPIC_HINT,
+                agent_reply_hint=hint,
             ),
             reasoning=[_build_chain(inp.query, intent_category, intent_conf, matched, [])],
             confidence=0.0,
@@ -535,6 +644,8 @@ def feishu_kb_search(inp: FeishuKbInput) -> SkillOutput[FeishuKbReport]:
             degradation_reason="; ".join(reason),
         )
 
+    hint = _agent_reply_hint(inp.query, intent_category, top_k) + _TRANSLATION_HINT.get(lang, "")
+    # 兜底:即使没走 hard-gate,只要 top_k 为空也应标 degraded(无任何命中)
     return SkillOutput(
         data=FeishuKbReport(
             query=inp.query,
@@ -543,11 +654,13 @@ def feishu_kb_search(inp: FeishuKbInput) -> SkillOutput[FeishuKbReport]:
             intent_confidence=intent_conf,
             matched_keywords=matched,
             top_k=top_k,
-            agent_reply_hint=_agent_reply_hint(inp.query, intent_category, top_k),
+            agent_reply_hint=hint,
         ),
         reasoning=[_build_chain(inp.query, intent_category, intent_conf, matched, top_k)],
         confidence=intent_conf,
         sample_size=len(faqs),
+        degraded=len(top_k) == 0,
+        degradation_reason="无任何 FAQ 命中" if not top_k else None,
     )
 
 

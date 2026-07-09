@@ -141,3 +141,49 @@ def test_garbage_query_returns_degraded() -> None:
     result = invoke("feishu_kb_search", _args("asdfgh qwerty"))
     assert result.data.top_k == []
     assert "暂未收录" in result.data.agent_reply_hint
+
+
+# ====================== 三语支持测试 ======================
+
+
+def test_detect_chinese() -> None:
+    """中文检测:含中文字符 → zh。"""
+    from flowmind.skills.feishu_kb import _detect_language
+
+    assert _detect_language("CVT 顿挫") == "zh"
+    assert _detect_language("我的车充电很慢") == "zh"
+
+
+def test_detect_english() -> None:
+    """英文检测:纯 ASCII Latin → en。"""
+    from flowmind.skills.feishu_kb import _detect_language
+
+    assert _detect_language("CVT jerking") == "en"
+    assert _detect_language("how to charge my car") == "en"
+
+
+def test_detect_thai() -> None:
+    """泰文检测:含泰文字符(U+0E00-U+0E7F) → th。"""
+    from flowmind.skills.feishu_kb import _detect_language
+
+    assert _detect_language("อาการสะดุด") == "th"
+    assert _detect_language("รถชาร์จไฟไม่เข้า") == "th"
+
+
+def test_english_query_not_blocked_by_chinese_keyword_gate() -> None:
+    """英文查询不应被中文关键词 hard-gate 拦截(应能命中 FAQ-0002)。"""
+    result = invoke("feishu_kb_search", _args("CVT jerking problem"))
+    assert result.ok is True
+    # 不应被 hard-gate 拦截 → top_k 应非空
+    assert len(result.data.top_k) >= 1
+    # agent_reply_hint 应包含翻译指令(英文提示词)
+    assert "English" in result.data.agent_reply_hint
+
+
+def test_thai_query_not_blocked() -> None:
+    """泰文查询也应能命中 FAQ。"""
+    result = invoke("feishu_kb_search", _args("รถชาร์จไฟไม่เข้า"))
+    assert result.ok is True
+    assert len(result.data.top_k) >= 1
+    # agent_reply_hint 应包含翻译指令(泰文提示词"ภาษาไทย")
+    assert "ภาษาไทย" in result.data.agent_reply_hint
