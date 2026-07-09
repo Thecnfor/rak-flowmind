@@ -20,6 +20,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
+    "python-docx>=1.0",  # 用于 scripts/build_seed_from_docx.py 重生 seed
 ]
 
 [project.scripts]
