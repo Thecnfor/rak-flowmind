@@ -187,3 +187,140 @@ def test_thai_query_not_blocked() -> None:
     assert len(result.data.top_k) >= 1
     # agent_reply_hint 应包含翻译指令(泰文提示词"ภาษาไทย")
     assert "ภาษาไทย" in result.data.agent_reply_hint
+
+
+# ====================== Tier 1 zero-LLM:同义词表扩容 ======================
+# 解决 EN/TH → ZH 词汇缺口:用户历史上 EN "one-click / emergency / how far"
+# 等词没在原有 40 项同义词表里,扩词后让 BM25 直接命中正确 FAQ。
+
+
+def test_synonyms_emergency_start() -> None:
+    """同义词扩:EN 'one-click emergency start operation' → '一键启动 应急启动 操作' → FAQ-0030。"""
+    result = invoke(
+        "feishu_kb_search",
+        _args("one-click emergency vehicle start operation method"),
+    )
+    assert result.ok is True
+    assert result.data.top_k[0].faq_id == "FAQ-0030", (
+        f"扩词后应命中 FAQ-0030(应急启动),实际 {result.data.top_k[0].faq_id}"
+    )
+
+
+def test_synonyms_fuel_warning_distance() -> None:
+    """同义词扩:EN 'fuel warning light how far' → 燃油报警灯 还能跑多远 → FAQ-0029。"""
+    result = invoke(
+        "feishu_kb_search",
+        _args(
+            "Wuling and Baojun vehicle models: how far can you drive after the fuel warning light comes on"
+        ),
+    )
+    assert result.ok is True
+    assert result.data.top_k[0].faq_id == "FAQ-0029", (
+        f"扩词后应命中 FAQ-0029(燃油报警灯跑多远),实际 {result.data.top_k[0].faq_id}"
+    )
+
+
+def test_synonyms_thai_rear_seat_warm() -> None:
+    """同义词扩:TH 'เบาะหลัง อุ่น' → 后排座椅 暖风不热 → FAQ-0026。"""
+    result = invoke(
+        "feishu_kb_search",
+        _args("รถไม่อุ่นที่เบาะหลัง ของ Kaijie"),
+    )
+    assert result.ok is True
+    assert result.data.top_k[0].faq_id == "FAQ-0026", (
+        f"扩词后 TH 后排暖风应命中 FAQ-0026,实际 {result.data.top_k[0].faq_id}"
+    )
+
+
+# ====================== Tier 1 zero-LLM:Title 加权检索 ======================
+# 解决 BM25 长 answer bias:让 question/title 命中权重高于 body,
+# 长 answer FAQ(如 FAQ-0029 燃料里程表)能凭 title 抢 Top-1。
+
+
+def test_title_weighted_recovers_long_answer_faq() -> None:
+    """Title 加权:EN fuel warning distance query → FAQ-0029(长 answer)。
+
+    Before title-weighted: FAQ-0073(短 answer 胎压灯)会抢 Top-1。
+    After title-weighted: title 命中更高的 FAQ-0029 抢 Top-1。
+    """
+    result = invoke(
+        "feishu_kb_search",
+        _args(
+            "Wuling and Baojun vehicle models: how far can you drive after the fuel warning light comes on"
+        ),
+    )
+    assert result.ok is True
+    assert result.data.top_k[0].faq_id == "FAQ-0029", (
+        f"title-weighted 应让 FAQ-0029 抢 Top-1,实际 {result.data.top_k[0].faq_id}"
+    )
+
+
+def test_title_weighted_zh_baseline_still_hits() -> None:
+    """Title 加权不应破坏 ZH baseline。
+
+    凯捷中后排暖风不热 — 已是最热门 ZH FAQ,加 title-weighted 后应仍然 Top-1。
+    """
+    result = invoke("feishu_kb_search", _args("凯捷车辆中后排暖风不热问题"))
+    assert result.ok is True
+    assert result.data.top_k[0].faq_id == "FAQ-0026"
+
+
+def test_title_weighted_balances_short_answers() -> None:
+    """Title 加权应让多短 answer FAQ 在同一 query 上更平衡(不会一长串同主题)。"""
+    # 胎压报警相关 query —— 不应所有 Top-K 都被胎压短路
+    result = invoke(
+        "feishu_kb_search",
+        _args("tire pressure warning light comes on what to do", top_k=3),
+    )
+    assert result.ok is True
+    assert len(result.data.top_k) >= 1
+    # Top-1 应该是胎压 related 而非被其他主题抢占
+    faq_ids = {h.faq_id for h in result.data.top_k}
+    assert any("胎压" in h.question or "tire" in h.question.lower() for h in result.data.top_k), (
+        f"Title 加权后胎压 query Top-K 至少 1 个胎压相关,实际 {faq_ids}"
+    )
+
+
+# ====================== OpenClaw 结构化字段契约 ======================
+# 让非 LLM agent(比如只读 JSON 字段的 agent)也能直接读懂
+# "用户问了什么语种" / "要不要翻译" / "怎么翻译"。
+# 字段:
+#   user_language: str           (zh/en/th/other)
+#   translation_required: bool   (True 当 user_language != "zh")
+#   translation_directive: dict  ({source, target, rule})
+
+
+def test_report_user_language_field() -> None:
+    """契约:FeishuKbReport 必须含 user_language 字段。"""
+    result = invoke("feishu_kb_search", _args("how to charge my car"))
+    assert hasattr(result.data, "user_language"), (
+        "[结构保护] FeishuKbReport 缺 user_language 字段"
+    )
+    assert result.data.user_language == "en"
+
+
+def test_report_translation_required_field() -> None:
+    """契约:FeishuKbReport 必须含 translation_required 字段,EN → True,ZH → False。"""
+    r_en = invoke("feishu_kb_search", _args("how to charge my car"))
+    assert hasattr(r_en.data, "translation_required")
+    assert r_en.data.translation_required is True, (
+        "EN query 应 translation_required=True"
+    )
+    r_zh = invoke("feishu_kb_search", _args("我的车充电很慢"))
+    assert r_zh.data.translation_required is False, (
+        "ZH query 应 translation_required=False"
+    )
+
+
+def test_report_translation_directive_field() -> None:
+    """契约:FeishuKbReport.translation_directive 含 source/target/rule 三键。"""
+    result = invoke("feishu_kb_search", _args("how to charge my car"))
+    d = result.data.translation_directive
+    assert isinstance(d, dict)
+    assert d.get("source") == "zh"
+    assert d.get("target") == "en"
+    rule = d.get("rule", "").lower()
+    # 必须包含"不替换/不软化"硬约束(中文或英文表述均可)
+    assert ("不软化" in d.get("rule", "") or "no soften" in rule), (
+        f"translation_directive.rule 必须含 '不软化/no soften' 硬约束,实际 '{d.get('rule')}'"
+    )
