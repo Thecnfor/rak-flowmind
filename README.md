@@ -52,7 +52,7 @@ cfg = run_interactive_init(ask_fn=my_chat_ask_fn)
 uv sync --extra dev
 
 # 2. 跑 8 个技能的全部测试（必须全绿）
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -p pytest_asyncio
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -p asyncio
 
 # 3. 跑全部 demo 看真实输出
 for f in examples/*_demo.py; do
