@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 uv sync --extra dev                                    # 装运行时 + 开发依赖（httpx / requests / pytest / ruff）
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -p pytest_asyncio                       # 全量测试（229 个，2026-07 当前）
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -p asyncio                              # 全量测试（249 passed / 1 skipped，2026-07 当前）— 注意是 `-p asyncio` 不是 `-p pytest_asyncio`
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest tests/test_inventory_risk.py -v          # 单文件
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest tests/test_skill.py::test_xxx -v        # 单个测试
 uv run ruff check src tests                            # lint（必须通过）
@@ -39,6 +39,14 @@ uv run flowmind-init                                   # 9 步对话式初始化
 - **`vl_client.py`** —— 视频本地化后端 HTTP 封装（含请求分类）。
 - **`server.py`** —— FastMCP（**v1**，`mcp>=1.27,<2`）遍历注册表动态登记 MCP tool。`_make_tool` 靠设置 `__annotations__` 驱动 schema 推断 —— v1 特定技巧。
 - **`skills/`** —— 8 个 `@skill` 注册在 `__init__.py`：3 个纯计算（`inventory_risk` / `feishu_kb_search` / `marketing_image_gen`）+ 5 个 HTTP 依赖的 `localize_*`。每个技能文件第一段 docstring 会被 `SkillSpec.description` 自动捕获。
+
+### `feishu_kb_search` 关键能力（PR #6 + PR #7 合入后）
+
+- **113 条企业 FAQ seed**（`feishu_kb_seed.json`，覆盖 8 份企业 docx 解析产物）—— 由 `scripts/build_seed_from_docx.py` 一次性重建，**不进入运行时依赖**。
+- **Hard-gate 防话题外**：中文 query 走"意图分类置信度=0" + `FeishuKbConfig.min_top1_score`（默认 0.015）双门；EN/TH 跳过关键词 gate（跨语言关键词不适用），仅走分数 gate。任何 path 下 `top_k=[]` → `metrics.degraded=True` + `agent_reply_hint` 透传"暂未收录"文案。
+- **中英泰三语支持（zero-LLM）**：`_detect_language()` 基于 Unicode 范围判 `zh/en/th/other`；`_CROSS_LANG_SYNONYMS`（~200 项）把 EN/TH 领域词桥接到中文 FAQ；`_phrase_match_bonus` 解决 BM25 长 answer bias。
+- **OpenClaw 结构化字段**（无 API key 时下游 agent 也能读）：`user_language` / `translation_required` / `translation_directive`（`{source, target, rule}`）。`agent_reply_hint` 末尾追加 `[Language-MANDATORY]` 强约束翻译层。
+- **严格忠于 KB**：`_agent_reply_hint` 改为"直接引用 Top-1 原文"，禁止 LLM 整合 / 补充 / 推测。
 
 ## 关键约定
 
@@ -79,8 +87,10 @@ r.data.failure_category is None
 ### Layer 1 — 单元（pytest）
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -p pytest_asyncio
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -p asyncio
 ```
+
+> **注意**：pytest-asyncio 注册的 entry point 名是 `asyncio`（不是 `pytest_asyncio`）。`-p pytest_asyncio` 会加载"未知 plugin"，导致 `asyncio_mode = "auto"` 配置项不生效，`async def` 测试全部 fail（"async def functions are not natively supported"）。
 
 ### Layer 2 — 端到端 Agent 视角（`flowmind-test-skill`）
 
