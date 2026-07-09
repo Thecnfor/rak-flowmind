@@ -99,3 +99,45 @@ def test_top1_has_positive_score() -> None:
     result = invoke("feishu_kb_search", _args("CVT 变速器"))
     if result.data.top_k:
         assert result.data.top_k[0].final_score >= 0
+
+
+def test_seed_size_at_least_100() -> None:
+    """默认 seed 至少 100 条,确保覆盖度。"""
+    from flowmind.skills.feishu_kb import _load_default_faqs
+
+    faqs = _load_default_faqs()
+    assert len(faqs) >= 100, f"seed 仅 {len(faqs)} 条,不足以稳定 BM25 召回"
+
+
+def test_faq_self_match() -> None:
+    """FAQ 自命中:用 seed 里一条 question 直接查,Top-1 应高置信命中自己。"""
+    from flowmind.skills.feishu_kb import _load_default_faqs
+
+    faqs = _load_default_faqs()
+    assert len(faqs) >= 10
+    sample = faqs[10]  # 取非首条,避免位置偏差
+    result = invoke(
+        "feishu_kb_search",
+        _args(sample["question"]),
+    )
+    assert result.ok is True
+    assert len(result.data.top_k) >= 1
+    top1 = result.data.top_k[0]
+    # Top-1 应是样本本身,或高置信命中(同一问题表述)
+    assert top1.faq_id == sample["id"] or sample["answer"][:30] in top1.answer
+    assert top1.final_score > 0.05, f"自命中置信度太低: {top1.final_score}"
+
+
+def test_offtopic_returns_degraded() -> None:
+    """话题外防御:无关查询返回 degraded=True + top_k=[] + 转人工 hint。"""
+    result = invoke("feishu_kb_search", _args("今天北京天气怎么样"))
+    assert result.ok is True  # 不报错,只是没命中
+    assert result.data.top_k == []
+    assert "暂未收录" in result.data.agent_reply_hint or "人工" in result.data.agent_reply_hint
+
+
+def test_garbage_query_returns_degraded() -> None:
+    """纯噪音 query 也走 hard-gate。"""
+    result = invoke("feishu_kb_search", _args("asdfgh qwerty"))
+    assert result.data.top_k == []
+    assert "暂未收录" in result.data.agent_reply_hint
